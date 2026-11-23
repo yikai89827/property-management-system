@@ -1,0 +1,41 @@
+:root {
+  --pms-bg: #f0f2f5;
+  --pms-surface: #ffffff;
+  --pms-aside-bg: linear-gradient(180deg, #f8fafc 0%, #ffffff 40%);
+  --pms-border: #e4e7ed;
+  --pms-text: #1f2a37;
+  --pms-text-secondary: #606266;
+  --pms-text-muted: #909399;
+  --pms-logo: #1f2a37;
+  --pms-main-bg: #f5f7fa;
+}
+
+html.dark {
+  --pms-bg: #0f1419;
+  --pms-surface: #1a1f2e;
+  --pms-aside-bg: linear-gradient(180deg, #141a24 0%, #1a1f2e 45%);
+  --pms-border: #2d3548;
+  --pms-text: #e8eaed;
+  --pms-text-secondary: #b0b8c4;
+  --pms-text-muted: #8b949e;
+  --pms-logo: #e8eaed;
+  --pms-main-bg: #0f1419;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: var(--pms-bg);
+  color: var(--pms-text);
+}
+
+html.dark .el-menu {
+  background-color: transparent !important;
+  border-right: none !important;
+}
+
+html.dark .el-card {
+  --el-card-bg-color: var(--pms-surface);
+}

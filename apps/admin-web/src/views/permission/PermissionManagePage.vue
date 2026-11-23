@@ -1,0 +1,206 @@
+<template>
+  <el-card>
+    <template #header>权限管理（仅公司管理员可见）</template>
+    <el-tabs v-model="tab">
+      <el-tab-pane label="员工账号" name="users">
+        <el-button type="primary" style="margin-bottom: 12px" @click="openCreateUser">新建员工账号</el-button>
+        <el-table :data="users" border>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="username" label="用户名" />
+          <el-table-column prop="realName" label="姓名" />
+          <el-table-column prop="roles" label="角色">
+            <template #default="{ row }">{{ (row.roles ?? []).join('、') }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'active' ? 'success' : 'danger'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="数据范围">
+            <template #default="{ row }">{{ row.allProjectsScope ? '全部项目' : `授权 ${row.projectScopes?.length ?? 0} 个项目` }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="160">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openPermissions(row)">配置权限</el-button>
+              <el-popconfirm :title="row.status === 'active' ? '停用后该账号登录态立即失效（离职生效路径）' : '恢复该账号？'" @confirm="toggleUser(row)">
+                <template #reference>
+                  <el-button link :type="row.status === 'active' ? 'danger' : 'success'">
+                    {{ row.status === 'active' ? '停用' : '启用' }}
+                  </el-button>
+                </template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane label="角色管理" name="roles">
+        <el-table :data="roles" border>
+          <el-table-column prop="code" label="编码" />
+          <el-table-column prop="name" label="名称" />
+          <el-table-column label="内置" width="80">
+            <template #default="{ row }">
+              <el-tag v-if="row.builtIn" type="warning">内置（禁删）</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane label="审计日志" name="audit">
+        <el-table :data="auditLogs" border>
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column prop="actionType" label="操作类型" width="160" />
+          <el-table-column prop="result" label="结果" width="100" />
+          <el-table-column label="内容">
+            <template #default="{ row }">
+              <span class="audit-content">{{ row.actionContent?.slice(0, 120) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="170">
+            <template #default="{ row }">{{ row.createdAt?.slice(0, 19).replace('T', ' ') }}</template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
+
+    <el-dialog v-model="userDialogVisible" title="新建员工账号" width="480">
+      <el-form :model="userForm" label-width="100px">
+        <el-form-item label="用户名" required>
+          <el-input v-model="userForm.username" />
+        </el-form-item>
+        <el-form-item label="初始密码" required>
+          <el-input v-model="userForm.password" type="password" />
+        </el-form-item>
+        <el-form-item label="姓名" required>
+          <el-input v-model="userForm.realName" />
+        </el-form-item>
+        <el-form-item label="角色" required>
+          <el-select v-model="userForm.roleCodes" multiple style="width: 100%">
+            <el-option v-for="r in roles" :key="r.code" :label="r.name" :value="r.code" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="createUser">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="permDrawerVisible" :title="`权限配置：${editingUser?.realName ?? ''}`" size="520">
+      <h4>权限点覆盖（允许/拒绝）</h4>
+      <el-table :data="permissionRows" border size="small" max-height="420">
+        <el-table-column prop="name" label="权限点" />
+        <el-table-column prop="type" label="类型" width="100" />
+        <el-table-column label="覆盖" width="160">
+          <template #default="{ row }">
+            <el-select v-model="row.override" size="small">
+              <el-option label="跟随角色" value="" />
+              <el-option label="允许" value="allow" />
+              <el-option label="拒绝" value="deny" />
+            </el-select>
+          </template>
+        </el-table-column>
+      </el-table>
+      <h4 style="margin-top: 16px">项目数据范围</h4>
+      <el-checkbox v-model="allProjectsScope">全部项目</el-checkbox>
+      <el-select v-if="!allProjectsScope" v-model="scopeProjectIds" multiple style="width: 100%">
+        <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+      </el-select>
+      <div style="margin-top: 16px; text-align: right">
+        <el-button type="primary" @click="savePermissions">保存（立即生效）</el-button>
+      </div>
+    </el-drawer>
+  </el-card>
+</template>
+
+<script setup lang="ts">
+import { onMounted, reactive, ref } from 'vue';
+import { ElMessage } from 'element-plus';
+import { http } from '@/api/request';
+
+const tab = ref('users');
+const users = ref<Record<string, any>[]>([]);
+const roles = ref<Record<string, any>[]>([]);
+const auditLogs = ref<Record<string, any>[]>([]);
+const projects = ref<{ id: number; name: string }[]>([]);
+const userDialogVisible = ref(false);
+const permDrawerVisible = ref(false);
+const userForm = reactive({ username: '', password: '', realName: '', roleCodes: [] as string[] });
+const editingUser = ref<Record<string, any> | null>(null);
+const permissionRows = ref<Record<string, any>[]>([]);
+const allProjectsScope = ref(false);
+const scopeProjectIds = ref<number[]>([]);
+
+async function load() {
+  users.value = await http.get<never, Record<string, any>[]>('/users');
+  roles.value = await http.get<never, Record<string, any>[]>('/roles');
+  const audit = await http.get<never, { list: Record<string, any>[] }>('/audit-logs');
+  auditLogs.value = audit.list;
+  const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
+  projects.value = p.list;
+}
+
+function openCreateUser() {
+  Object.assign(userForm, { username: '', password: '', realName: '', roleCodes: [] });
+  userDialogVisible.value = true;
+}
+
+async function createUser() {
+  if (!userForm.username || userForm.password.length < 6 || !userForm.realName || userForm.roleCodes.length === 0) {
+    ElMessage.warning('请完整填写（密码至少 6 位，至少一个角色）');
+    return;
+  }
+  await http.post('/users', userForm);
+  ElMessage.success('员工账号创建成功');
+  userDialogVisible.value = false;
+  await load();
+}
+
+async function toggleUser(row: Record<string, any>) {
+  await http.patch(`/users/${row.id}`, { status: row.status === 'active' ? 'disabled' : 'active' });
+  ElMessage.success(row.status === 'active' ? '已停用（该账号登录态立即失效）' : '已启用');
+  await load();
+}
+
+async function openPermissions(row: Record<string, any>) {
+  editingUser.value = row;
+  const [perms, current] = await Promise.all([
+    http.get<never, Record<string, any>[]>('/permissions'),
+    http.get<never, Record<string, any>>(`/users/${row.id}/permissions`),
+  ]);
+  const overrideMap = new Map<string, string>(
+    (current.overrides ?? []).map((o: Record<string, any>) => [o.permissionCode, o.overrideType]),
+  );
+  permissionRows.value = perms.map((p) => ({
+    code: p.code,
+    name: p.name,
+    type: p.type === 'operation' ? '操作' : '查询项',
+    override: overrideMap.get(p.code) ?? '',
+  }));
+  allProjectsScope.value = current.allProjectsScope ?? false;
+  scopeProjectIds.value = current.projectScopes ?? [];
+  permDrawerVisible.value = true;
+}
+
+/** 保存授权（授权/回收下一次请求立即生效） */
+async function savePermissions() {
+  if (!editingUser.value) return;
+  const overrides = permissionRows.value
+    .filter((r) => r.override)
+    .map((r) => ({ permissionCode: r.code, overrideType: r.override }));
+  await http.put(`/users/${editingUser.value.id}/permissions`, { overrides });
+  await http.put(`/users/${editingUser.value.id}/project-scopes`, {
+    allProjectsScope: allProjectsScope.value,
+    projectIds: scopeProjectIds.value,
+  });
+  ElMessage.success('权限配置已保存，下一次请求立即生效');
+  permDrawerVisible.value = false;
+  await load();
+}
+
+onMounted(load);
+</script>
+
+<style scoped>
+.audit-content { font-size: 12px; color: #606266; }
+</style>

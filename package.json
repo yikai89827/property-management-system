@@ -1,0 +1,20 @@
+{
+  "name": "property-management-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "物业管理系统（业主端/项目端/公司管理端三端，多物业公司扩展）",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:server": "pnpm --filter @pms/server dev",
+    "dev:admin": "pnpm --filter @pms/admin-web dev",
+    "dev:owner": "pnpm --filter @pms/owner-h5 dev",
+    "build": "pnpm --filter @pms/shared build && pnpm --filter @pms/server build && pnpm --filter @pms/admin-web build && pnpm --filter @pms/owner-h5 build",
+    "test": "pnpm --filter @pms/server test",
+    "lint": "pnpm -r run lint",
+    "seed": "pnpm --filter @pms/server exec ts-node -T src/database/seeds/run-seed.ts",
+    "publish:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File ./deploy/publish.ps1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
