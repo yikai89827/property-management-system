@@ -77,6 +77,8 @@ export const PermissionCodes = {
   CUSTOMER_CREATE: 'customer:create',
   CUSTOMER_UPDATE: 'customer:update',
   CUSTOMER_VIEW: 'customer:view',
+  /** 已确认档案的核心字段解锁修改 */
+  CUSTOMER_PROFILE_UNLOCK: 'customer:profile_unlock',
   CHARGE_DELIVERY_EXECUTE: 'charge:delivery:execute',
   CHARGE_PROPERTY_EXECUTE: 'charge:property:execute',
   CHARGE_OTHER_EXECUTE: 'charge:other:execute',
@@ -110,6 +112,7 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: Permission
       { code: PermissionCodes.CUSTOMER_VIEW, name: '客户查询', type: 'query_scope' },
       { code: PermissionCodes.CUSTOMER_CREATE, name: '客户新建', type: 'operation' },
       { code: PermissionCodes.CUSTOMER_UPDATE, name: '客户修改', type: 'operation' },
+      { code: PermissionCodes.CUSTOMER_PROFILE_UNLOCK, name: '客户档案解锁修改', type: 'operation' },
     ],
   },
   {

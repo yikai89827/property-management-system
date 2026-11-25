@@ -40,6 +40,13 @@
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="操作" width="90">
+            <template #default="{ row }">
+              <el-button link :type="row.enabled ? 'warning' : 'success'" @click="toggleCategory(row)">
+                {{ row.enabled ? '停用' : '启用' }}
+              </el-button>
+            </template>
+          </el-table-column>
         </el-table>
         <el-form inline style="margin-top: 8px">
           <el-form-item>
@@ -61,6 +68,13 @@
           <el-table-column label="状态" width="80">
             <template #default="{ row }">
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="90">
+            <template #default="{ row }">
+              <el-button link :type="row.enabled ? 'warning' : 'success'" @click="toggleMethod(row)">
+                {{ row.enabled ? '停用' : '启用' }}
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -154,6 +168,18 @@ async function addMethod() {
   ElMessage.success('新增成功');
   newMethod.code = '';
   newMethod.name = '';
+  await loadDicts();
+}
+
+async function toggleCategory(row: Record<string, any>) {
+  await http.patch(`/fee-categories/${row.id}`, { enabled: !row.enabled });
+  ElMessage.success(row.enabled ? '已停用（缴费页不再可选，历史单据不受影响）' : '已重新启用');
+  await loadDicts();
+}
+
+async function toggleMethod(row: Record<string, any>) {
+  await http.patch(`/payment-methods/${row.id}`, { enabled: !row.enabled });
+  ElMessage.success(row.enabled ? '已停用（缴费页不再可选，历史单据不受影响）' : '已重新启用');
   await loadDicts();
 }
 

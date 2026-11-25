@@ -149,6 +149,14 @@ export class CustomerEntity {
   @Column({ name: 'house_status', default: HouseStatus.UNDELIVERED })
   houseStatus!: string;
 
+  /** 档案确认时间（确认后核心字段锁定） */
+  @Column({ name: 'profile_confirmed_at', nullable: true })
+  profileConfirmedAt?: string;
+
+  /** 临时解锁截止时间（ISO）；过期或 PATCH 成功后清空 */
+  @Column({ name: 'profile_unlock_until', nullable: true })
+  profileUnlockUntil?: string;
+
   /** 扩展字段 JSON */
   @Column({ name: 'ext', type: 'text', nullable: true })
   ext?: string;
@@ -162,6 +170,86 @@ export class CustomerEntity {
   /** 逻辑删除（有缴费记录的客户禁止删除） */
   @Column({ name: 'deleted_at', nullable: true })
   deletedAt?: string;
+}
+
+/** 房屋转售/业主更迭历史（缴费台账仍挂原 customer） */
+@Entity('ownership_history')
+@Index(['companyId', 'customerId', 'transferredAt'])
+export class OwnershipHistoryEntity {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ name: 'company_id' })
+  companyId!: number;
+
+  @Column({ name: 'customer_id' })
+  customerId!: number;
+
+  @Column({ name: 'from_person_id', nullable: true })
+  fromPersonId?: number;
+
+  @Column({ name: 'to_person_id' })
+  toPersonId!: number;
+
+  @Column({ name: 'from_name' })
+  fromName!: string;
+
+  @Column({ name: 'from_id_card_masked' })
+  fromIdCardMasked!: string;
+
+  @Column({ name: 'to_name' })
+  toName!: string;
+
+  @Column({ name: 'to_id_card_masked' })
+  toIdCardMasked!: string;
+
+  @Column({ name: 'transferred_at' })
+  transferredAt!: string;
+
+  @Column({ name: 'operator_id' })
+  operatorId!: number;
+
+  @Column({ name: 'remark', nullable: true })
+  remark?: string;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt!: string;
+}
+
+/** 装修报备（空置优惠资格依据） */
+@Entity('decorate_filing')
+@Index(['companyId', 'customerId', 'status'])
+export class DecorateFilingEntity {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ name: 'company_id' })
+  companyId!: number;
+
+  @Column({ name: 'customer_id' })
+  customerId!: number;
+
+  @Column({ name: 'start_date' })
+  startDate!: string;
+
+  @Column({ name: 'end_date', nullable: true })
+  endDate?: string;
+
+  /** pending | active | closed */
+  @Column({ name: 'status', default: 'active' })
+  status!: string;
+
+  @Column({ name: 'remark', nullable: true })
+  remark?: string;
+
+  @Column({ name: 'created_by' })
+  createdBy!: number;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt!: string;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt!: string;
 }
 
 @Entity('vehicle_plate')
@@ -218,4 +306,6 @@ export const orgEntities = [
   CustomerEntity,
   VehiclePlateEntity,
   CustomerChangeLogEntity,
+  OwnershipHistoryEntity,
+  DecorateFilingEntity,
 ];

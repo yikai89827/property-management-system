@@ -127,11 +127,30 @@ export class FeeCalculationService {
     return Math.max(1, FeeCalculationService.monthDiff(startMonth, currentMonth) + 1);
   }
 
+  /** 累计计费月数：起始月至 asOfMonth（YYYY-MM，含） */
+  totalBillableMonthsAsOf(feeStartDate: string, asOfMonth: string): number {
+    const startMonth = FeeCalculationService.monthOf(feeStartDate);
+    return Math.max(0, FeeCalculationService.monthDiff(startMonth, asOfMonth) + 1);
+  }
+
   /** 已缴费月数：effective + pending 月段总和 */
   paidMonths(ledgers: PropertyFeeLedgerEntity[]): number {
     return ledgers
       .filter((l) => l.status === 'effective' || l.status === 'pending')
       .reduce((sum, l) => sum + l.months, 0);
+  }
+
+  /** 截至 asOfMonth（含）已覆盖的缴费月数 */
+  paidMonthsUpTo(ledgers: PropertyFeeLedgerEntity[], asOfMonth: string): number {
+    let count = 0;
+    for (const l of ledgers.filter((x) => x.status === 'effective' || x.status === 'pending')) {
+      let cursor = l.startMonth;
+      for (let i = 0; i < l.months; i++) {
+        if (FeeCalculationService.monthDiff(cursor, asOfMonth) >= 0) count += 1;
+        cursor = FeeCalculationService.addMonths(cursor, 1);
+      }
+    }
+    return count;
   }
 
   /**

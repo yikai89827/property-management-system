@@ -100,8 +100,12 @@ onMounted(async () => {
   const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
   projects.value = p.list;
   projectId.value = p.list[0]?.id;
-  categories.value = await http.get<never, { code: string; name: string }[]>('/fee-categories');
-  methods.value = await http.get<never, { code: string; name: string }[]>('/payment-methods');
+  categories.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/fee-categories')).filter(
+    (c) => c.enabled !== false,
+  );
+  methods.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/payment-methods')).filter(
+    (m) => m.enabled !== false,
+  );
 });
 </script>
 

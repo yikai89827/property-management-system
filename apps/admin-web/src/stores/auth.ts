@@ -1,11 +1,17 @@
 import { defineStore } from 'pinia';
 import { http } from '@/api/request';
 
+export interface UserRoleInfo {
+  code: string;
+  name: string;
+}
+
 export interface UserInfo {
   id: number;
   username: string;
   realName: string;
   companyName: string;
+  roles: UserRoleInfo[];
   permissions: string[];
   allProjectsScope: boolean;
   projectScopes: number[];

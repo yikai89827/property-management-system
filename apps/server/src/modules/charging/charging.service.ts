@@ -25,6 +25,7 @@ import {
   ReceiptOrderItemEntity,
 } from '../../database/entities/charging-entities';
 import { FeeCalculationService, FeeCalcResult } from '../fee-calculation/fee-calculation.service';
+import { CustomerService } from '../customer/customer.service';
 import { SequenceService } from './sequence.service';
 import { RECEIPT_FIXED_REMARK } from '@pms/shared';
 
@@ -54,7 +55,19 @@ export class ChargingService {
     private readonly feeCalculationService: FeeCalculationService,
     private readonly sequenceService: SequenceService,
     private readonly tenantService: TenantService,
+    private readonly customerService: CustomerService,
   ) {}
+
+  private async assertVacantDiscountAllowed(companyId: number, customerId: number, discountType?: DiscountType) {
+    if (discountType !== DiscountType.VACANT) return;
+    const ok = await this.customerService.hasActiveDecorateFiling(companyId, customerId);
+    if (!ok) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        '选择空置房优惠须先有有效装修报备；请在客户档案中登记装修报备',
+      );
+    }
+  }
 
   /* ============ 6.2 交房缴费（单事务） ============ */
   async chargeDelivery(input: {
@@ -78,6 +91,7 @@ export class ChargingService {
       if (!customer || customer.deletedAt) throw new BusinessException(ErrorCodes.ROOM_NO_NOT_FOUND);
       const project = await manager.findOne(ProjectEntity, { where: { id: input.projectId, companyId } });
       if (!project) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在');
+      await this.assertVacantDiscountAllowed(companyId, customer.id, input.discountType);
 
       // ①a 复查押金/装修管理费/垃圾清运费未缴（重复拦截；已交房后的重复提交同样拦截）
       const existingDelivery = await manager.findOne(ReceiptOrderEntity, {
@@ -230,6 +244,7 @@ export class ChargingService {
       if (!customer || customer.deletedAt) throw new BusinessException(ErrorCodes.ROOM_NO_NOT_FOUND);
       const project = await manager.findOne(ProjectEntity, { where: { id: input.projectId, companyId } });
       if (!project) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在');
+      await this.assertVacantDiscountAllowed(companyId, customer.id, input.discountType);
 
       // 事务内复查剩余应交费月份 > 0
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId: customer.id } });

@@ -90,6 +90,9 @@
         <el-form-item label="物业费起始时间" required>
           <el-date-picker v-model="form.feeStartDate" type="date" value-format="YYYY-MM-DD" />
         </el-form-item>
+        <el-form-item label="装修时间">
+          <el-date-picker v-model="form.decorateDate" type="date" value-format="YYYY-MM-DD" />
+        </el-form-item>
         <el-form-item label="合同签约时间">
           <el-date-picker v-model="form.contractDate" type="date" value-format="YYYY-MM-DD" />
         </el-form-item>
@@ -97,6 +100,9 @@
           <el-select v-model="form.houseStatus" style="width: 200px">
             <el-option v-for="(label, v) in statusLabels" :key="v" :label="label" :value="v" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="建档后">
+          <el-checkbox v-model="form.confirmAfterCreate">立即确认档案（确认后核心字段锁定）</el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -142,8 +148,10 @@ const form = reactive({
   idCard: '',
   houseArea: 100,
   feeStartDate: '',
+  decorateDate: '',
   contractDate: '',
   houseStatus: HouseStatus.UNDELIVERED,
+  confirmAfterCreate: true,
 });
 
 async function load() {
@@ -164,8 +172,9 @@ function openCreate() {
     projectId: query.projectId ?? projectStore.currentProjectId ?? projects.value[0]?.id,
     residentType: ResidentType.OWNER,
     name: '', phone: '', roomNo: '', idCard: '',
-    houseArea: 100, feeStartDate: '', contractDate: '',
+    houseArea: 100, feeStartDate: '', decorateDate: '', contractDate: '',
     houseStatus: HouseStatus.UNDELIVERED,
+    confirmAfterCreate: true,
   });
   dialogVisible.value = true;
 }
@@ -190,8 +199,17 @@ async function submit() {
     return;
   }
   try {
-    await http.post('/customers', { ...form, contractDate: form.contractDate || undefined });
-    ElMessage.success('客户档案创建成功（身份证已关联自然人身份）');
+    const created = await http.post<never, { id: number }>('/customers', {
+      ...form,
+      contractDate: form.contractDate || undefined,
+      decorateDate: form.decorateDate || undefined,
+    });
+    if (form.confirmAfterCreate && created?.id) {
+      await http.post(`/customers/${created.id}/confirm-profile`);
+      ElMessage.success('客户档案已创建并确认锁定');
+    } else {
+      ElMessage.success('客户档案创建成功（请在详情页确认后锁定）');
+    }
     dialogVisible.value = false;
     await load();
   } catch {

@@ -68,6 +68,7 @@ export class AuthController {
       username: user?.username,
       realName: user?.realName,
       companyName: company?.name,
+      roles: resolved.roles,
       permissions: [...resolved.permissions],
       allProjectsScope: resolved.allProjectsScope,
       projectScopes: resolved.projectScopes,

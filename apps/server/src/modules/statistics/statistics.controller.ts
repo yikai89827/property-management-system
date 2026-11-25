@@ -23,6 +23,23 @@ export class StatisticsController {
     return TenantContext.getCompanyId()!;
   }
 
+  /** 财务工作台：按项目/日或月收费汇总 + 分类汇总 + 明细 */
+  @RequirePermissions(PermissionCodes.STATISTIC_MONTHLY_VIEW)
+  @Get('finance-overview')
+  financeOverview(
+    @Query('startTime') startTime?: string,
+    @Query('endTime') endTime?: string,
+    @Query('projectIds') projectIds?: string,
+    @Query('grain') grain?: string,
+  ) {
+    return this.statisticsService.financeOverview(this.companyId(), {
+      startTime,
+      endTime,
+      projectIds: parseProjectIds(projectIds),
+      grain: grain === 'month' ? 'month' : 'day',
+    });
+  }
+
   /** 月度统计（应收/实收/优惠/押金） */
   @RequirePermissions(PermissionCodes.STATISTIC_MONTHLY_VIEW)
   @Get('monthly')
@@ -52,11 +69,11 @@ export class StatisticsController {
     return this.statisticsService.category(this.companyId(), startTime, endTime, parseProjectIds(projectIds));
   }
 
-  /** 欠费统计 */
+  /** 欠费统计（asOf=YYYY-MM 统计截止月） */
   @RequirePermissions(PermissionCodes.STATISTIC_ARREARS_VIEW)
   @Get('arrears')
-  arrears(@Query('projectIds') projectIds?: string) {
-    return this.statisticsService.arrears(this.companyId(), parseProjectIds(projectIds));
+  arrears(@Query('projectIds') projectIds?: string, @Query('asOf') asOf?: string) {
+    return this.statisticsService.arrears(this.companyId(), parseProjectIds(projectIds), asOf);
   }
 
   @RequirePermissions(PermissionCodes.STATISTIC_RECEIVABLE_VIEW)

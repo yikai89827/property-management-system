@@ -21,6 +21,15 @@
         <el-descriptions-item label="房号">{{ previewData.customer.roomNo }}</el-descriptions-item>
         <el-descriptions-item label="面积">{{ (previewData.customer.houseAreaFen / 100).toFixed(2) }}㎡</el-descriptions-item>
         <el-descriptions-item label="状态">{{ previewData.customer.houseStatusLabel }}</el-descriptions-item>
+        <el-descriptions-item label="物业费起始">{{ previewData.customer.feeStartDate ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="装修时间">{{ previewData.customer.decorateDate ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="计费区间">{{ previewData.feeStartMonth }} ~ {{ previewData.feeEndMonth }}</el-descriptions-item>
+        <el-descriptions-item label="欠费月数">{{ previewData.arrearsMonths }}</el-descriptions-item>
+        <el-descriptions-item label="空置优惠资格" :span="4">
+          <el-tag :type="previewData.customer.vacantEligible ? 'success' : 'info'">
+            {{ previewData.customer.vacantEligible ? '有有效装修报备，可选空置优惠' : '无装修报备，不可选空置优惠' }}
+          </el-tag>
+        </el-descriptions-item>
       </el-descriptions>
       <el-table :data="previewData.feeItems" border style="margin-top: 12px">
         <el-table-column label="费用项" width="130">
@@ -140,7 +149,9 @@ onMounted(async () => {
   const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
   projects.value = p.list;
   projectId.value = p.list[0]?.id;
-  methods.value = await http.get<never, { code: string; name: string }[]>('/payment-methods');
+  methods.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/payment-methods')).filter(
+    (m) => m.enabled !== false,
+  );
 });
 </script>
 

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ChargeType, ErrorCodes, ReceiptStatus } from '@pms/shared';
+import { ChargeType, CHARGE_TYPE_LABELS, ErrorCodes, FEE_ITEM_LABELS, FeeItemCode, ReceiptStatus } from '@pms/shared';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { TenantService } from '../../common/tenant/tenant.service';
 import { PropertyFeeLedgerEntity, ReceiptOrderEntity, ReceiptOrderItemEntity } from '../../database/entities/charging-entities';
@@ -35,13 +35,20 @@ export class StatisticsService {
     return filtered;
   }
 
+  private normalizeEndTime(endTime?: string) {
+    if (!endTime) return endTime;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endTime)) return `${endTime}T23:59:59.999`;
+    return endTime;
+  }
+
   private effectiveWhere(companyId: number, startTime?: string, endTime?: string, projectIds?: number[]) {
     const qb = this.receiptRepo
       .createQueryBuilder('r')
       .where('r.companyId = :companyId', { companyId })
       .andWhere('r.status = :status', { status: ReceiptStatus.EFFECTIVE });
     if (startTime) qb.andWhere('r.createdAt >= :startTime', { startTime });
-    if (endTime) qb.andWhere('r.createdAt <= :endTime', { endTime });
+    const end = this.normalizeEndTime(endTime);
+    if (end) qb.andWhere('r.createdAt <= :endTime', { endTime: end });
     const scoped = this.scopedProjectIds(companyId, projectIds);
     if (scoped.length > 0) qb.andWhere('r.projectId IN (:...scoped)', { scoped });
     else if (scoped.length === 0 && !this.tenantService.get()?.allProjectsScope && !projectIds?.length) {
@@ -49,6 +56,185 @@ export class StatisticsService {
       qb.andWhere('1 = 0');
     }
     return qb;
+  }
+
+  private categoryLabel(code: string): string {
+    if (code.startsWith('OTHER:')) {
+      const raw = code.slice(6);
+      return FEE_ITEM_LABELS[raw as FeeItemCode] ?? `其他·${raw}`;
+    }
+    return FEE_ITEM_LABELS[code as FeeItemCode] ?? code;
+  }
+
+  /**
+   * 财务工作台：按项目 + 日/月粒度的收费汇总、分类汇总与明细。
+   * grain=day 按自然日；grain=month 按自然月。
+   */
+  async financeOverview(
+    companyId: number,
+    opts: { startTime?: string; endTime?: string; projectIds?: number[]; grain?: 'day' | 'month' } = {},
+  ) {
+    const grain = opts.grain === 'month' ? 'month' : 'day';
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const startTime =
+      opts.startTime ??
+      (grain === 'day' ? `${y}-${m}-01` : `${y}-01-01`);
+    const endTime = opts.endTime ?? `${y}-${m}-${d}`;
+
+    const orders = await this.effectiveWhere(companyId, startTime, endTime, opts.projectIds)
+      .orderBy('r.createdAt', 'DESC')
+      .getMany();
+
+    const allProjects = await this.projectRepo.find({ where: { companyId } });
+    const scopedIds = this.scopedProjectIds(companyId, opts.projectIds);
+    const tenant = this.tenantService.get();
+    const visibleProjects =
+      scopedIds.length > 0
+        ? allProjects.filter((p) => scopedIds.includes(p.id))
+        : tenant?.allProjectsScope
+          ? allProjects
+          : [];
+    const projectMap = new Map(allProjects.map((p) => [p.id, p.name]));
+
+    const byProjectMap = new Map<number, ReceiptOrderEntity[]>();
+    const byPeriodMap = new Map<string, ReceiptOrderEntity[]>();
+    for (const o of orders) {
+      if (!byProjectMap.has(o.projectId)) byProjectMap.set(o.projectId, []);
+      byProjectMap.get(o.projectId)!.push(o);
+      const period = grain === 'day' ? o.createdAt.slice(0, 10) : o.createdAt.slice(0, 7);
+      if (!byPeriodMap.has(period)) byPeriodMap.set(period, []);
+      byPeriodMap.get(period)!.push(o);
+    }
+
+    const byProject = [...byProjectMap.entries()]
+      .map(([projectId, list]) => ({
+        projectId,
+        projectName: projectMap.get(projectId) ?? `项目${projectId}`,
+        ...this.summarize(list),
+      }))
+      .sort((a, b) => b.receivedAmount - a.receivedAmount);
+
+    const periodKeys = this.fillPeriods(startTime, endTime, grain);
+    const byPeriod = periodKeys.map((period) => ({
+      period,
+      ...this.summarize(byPeriodMap.get(period) ?? []),
+    }));
+
+    let byCategory: {
+      category: string;
+      categoryLabel: string;
+      receivableAmount: number;
+      receivedAmount: number;
+      discountAmount: number;
+      orderCount: number;
+    }[] = [];
+    if (orders.length > 0) {
+      const items = await this.itemRepo
+        .createQueryBuilder('i')
+        .where('i.orderId IN (:...orderIds)', { orderIds: orders.map((o) => o.id) })
+        .getMany();
+      const orderMap = new Map(orders.map((o) => [o.id, o]));
+      const catMap = new Map<string, { receivable: number; received: number; discount: number; count: number }>();
+      for (const item of items) {
+        const order = orderMap.get(item.orderId);
+        if (!order) continue;
+        const category = item.feeCategoryRef ? `OTHER:${item.feeItemCode}` : String(item.feeItemCode);
+        const entry = catMap.get(category) ?? { receivable: 0, received: 0, discount: 0, count: 0 };
+        entry.receivable += item.amount;
+        entry.received += item.amount;
+        entry.count += 1;
+        catMap.set(category, entry);
+      }
+      byCategory = [...catMap.entries()]
+        .map(([category, v]) => ({
+          category,
+          categoryLabel: this.categoryLabel(category),
+          receivableAmount: v.receivable,
+          receivedAmount: v.received,
+          discountAmount: v.discount,
+          orderCount: v.count,
+        }))
+        .sort((a, b) => b.receivedAmount - a.receivedAmount);
+    }
+
+    const details = orders.slice(0, 100).map((o) => {
+      let roomNo = '';
+      let customerName = '';
+      try {
+        const snap = JSON.parse(o.snapshotJson || '{}');
+        roomNo = snap.roomNo ?? '';
+        customerName = snap.customerName ?? snap.name ?? '';
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (!customerName) {
+          const payer = JSON.parse(o.payerSnapshot || '{}');
+          customerName = payer.customerName ?? '';
+          roomNo = roomNo || payer.roomNo || '';
+        }
+      } catch {
+        /* ignore */
+      }
+      return {
+        orderNo: o.orderNo,
+        projectId: o.projectId,
+        projectName: projectMap.get(o.projectId) ?? '',
+        roomNo,
+        customerName,
+        chargeType: o.chargeType,
+        chargeTypeLabel: CHARGE_TYPE_LABELS[o.chargeType] ?? o.chargeType,
+        paidAt: o.paidAt ?? o.createdAt,
+        createdAt: o.createdAt,
+        receivableAmount: o.receivableAmount,
+        receivedAmount: o.receivedAmount,
+        discountAmount: o.discountAmount,
+      };
+    });
+
+    return {
+      grain,
+      startTime,
+      endTime,
+      projects: visibleProjects.map((p) => ({ id: p.id, name: p.name, address: p.address })),
+      summary: this.summarize(orders),
+      byProject,
+      byPeriod,
+      byCategory,
+      details,
+    };
+  }
+
+  private fillPeriods(startTime: string, endTime: string, grain: 'day' | 'month'): string[] {
+    const start = startTime.slice(0, 10);
+    const end = endTime.slice(0, 10);
+    const keys: string[] = [];
+    if (grain === 'month') {
+      let [y, m] = start.slice(0, 7).split('-').map(Number);
+      const [ey, em] = end.slice(0, 7).split('-').map(Number);
+      while (y < ey || (y === ey && m <= em)) {
+        keys.push(`${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`);
+        m += 1;
+        if (m > 12) {
+          m = 1;
+          y += 1;
+        }
+      }
+      return keys;
+    }
+    const cur = new Date(`${start}T00:00:00`);
+    const last = new Date(`${end}T00:00:00`);
+    while (cur <= last) {
+      const yy = cur.getFullYear();
+      const mm = String(cur.getMonth() + 1).padStart(2, '0');
+      const dd = String(cur.getDate()).padStart(2, '0');
+      keys.push(`${yy}-${mm}-${dd}`);
+      cur.setDate(cur.getDate() + 1);
+    }
+    return keys;
   }
 
   /** 月度统计（自然月应收/实收/优惠/押金汇总） */
@@ -107,8 +293,8 @@ export class StatisticsService {
     }));
   }
 
-  /** 欠费统计（按项目/房号维度汇总+明细） */
-  async arrears(companyId: number, projectIds?: number[]) {
+  /** 欠费统计（按项目/房号维度汇总+明细；asOf=YYYY-MM 截止月，默认当月） */
+  async arrears(companyId: number, projectIds?: number[], asOf?: string) {
     const scoped = this.scopedProjectIds(companyId, projectIds);
     const customers = await this.customerRepo.find({ where: { companyId } });
     const scopedSet = new Set(scoped);
@@ -116,6 +302,7 @@ export class StatisticsService {
     const ledgers = await this.ledgerRepo.find({ where: { companyId } });
     const projects = await this.projectRepo.find({ where: { companyId } });
     const projectMap = new Map(projects.map((p) => [p.id, p.name]));
+    const asOfMonth = asOf && /^\d{4}-\d{2}$/.test(asOf) ? asOf : new Date().toISOString().slice(0, 7);
 
     const rows: {
       projectId: number;
@@ -124,25 +311,28 @@ export class StatisticsService {
       customerName: string;
       arrearsMonths: number;
       arrearsAmount: number;
+      asOfMonth: string;
     }[] = [];
     for (const c of inScope) {
+      if (c.deletedAt) continue;
       const customerLedgers = ledgers.filter((l) => l.customerId === c.id);
-      const totalBillable = this.tenantService ? this.monthsFromStart(c.feeStartDate) : 0;
-      const paid = customerLedgers
-        .filter((l) => l.status === 'effective' || l.status === 'pending')
-        .reduce((s, l) => s + l.months, 0);
+      const totalBillable = this.monthsFromStartTo(c.feeStartDate, asOfMonth);
+      const paid = this.paidMonthsUpTo(customerLedgers, asOfMonth);
       const arrearsMonths = Math.max(0, totalBillable - paid);
-      if (arrearsMonths > 0 && customerLedgers.length > 0) {
-        const unitPrice = customerLedgers[customerLedgers.length - 1].unitPriceSnapshot;
-        rows.push({
-          projectId: c.projectId,
-          projectName: projectMap.get(c.projectId) ?? '',
-          roomNo: c.roomNo,
-          customerName: c.name,
-          arrearsMonths,
-          arrearsAmount: Math.round((c.houseArea * unitPrice) / 100) * arrearsMonths,
-        });
-      }
+      if (arrearsMonths <= 0) continue;
+      const unitPrice =
+        customerLedgers.length > 0
+          ? customerLedgers[customerLedgers.length - 1].unitPriceSnapshot
+          : 120;
+      rows.push({
+        projectId: c.projectId,
+        projectName: projectMap.get(c.projectId) ?? '',
+        roomNo: c.roomNo,
+        customerName: c.name,
+        arrearsMonths,
+        arrearsAmount: Math.round((c.houseArea * unitPrice) / 100) * arrearsMonths,
+        asOfMonth,
+      });
     }
     return rows;
   }
@@ -190,11 +380,36 @@ export class StatisticsService {
   }
 
   private monthsFromStart(feeStartDate: string, now: Date = new Date()): number {
+    return this.monthsFromStartTo(feeStartDate, now.toISOString().slice(0, 7));
+  }
+
+  private monthsFromStartTo(feeStartDate: string, asOfMonth: string): number {
     const startMonth = feeStartDate.slice(0, 7);
-    const currentMonth = now.toISOString().slice(0, 7);
     const [sy, sm] = startMonth.split('-').map(Number);
-    const [cy, cm] = currentMonth.split('-').map(Number);
-    return Math.max(1, (cy * 12 + cm) - (sy * 12 + sm) + 1);
+    const [cy, cm] = asOfMonth.split('-').map(Number);
+    return Math.max(0, cy * 12 + cm - (sy * 12 + sm) + 1);
+  }
+
+  private paidMonthsUpTo(ledgers: PropertyFeeLedgerEntity[], asOfMonth: string): number {
+    const addMonths = (month: string, n: number) => {
+      const [y, m] = month.split('-').map(Number);
+      const total = y * 12 + (m - 1) + n;
+      return `${String(Math.floor(total / 12)).padStart(4, '0')}-${String((total % 12) + 1).padStart(2, '0')}`;
+    };
+    const cmp = (a: string, b: string) => {
+      const [ay, am] = a.split('-').map(Number);
+      const [by, bm] = b.split('-').map(Number);
+      return ay * 12 + am - (by * 12 + bm);
+    };
+    let count = 0;
+    for (const l of ledgers.filter((x) => x.status === 'effective' || x.status === 'pending')) {
+      let cursor = l.startMonth;
+      for (let i = 0; i < l.months; i++) {
+        if (cmp(asOfMonth, cursor) >= 0) count += 1;
+        cursor = addMonths(cursor, 1);
+      }
+    }
+    return count;
   }
 }
 

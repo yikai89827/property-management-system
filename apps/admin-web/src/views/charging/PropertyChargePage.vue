@@ -17,16 +17,27 @@
 
     <template v-if="billingInfo">
       <el-descriptions title="计费信息卡" :column="4" border>
-        <el-descriptions-item label="物业费起始月">{{ billingInfo.feeStartMonth }}</el-descriptions-item>
-        <el-descriptions-item label="物业费截止月">{{ billingInfo.feeEndMonth }}</el-descriptions-item>
+        <el-descriptions-item label="业主">{{ customerInfo?.name ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="装修时间">{{ customerInfo?.decorateDate ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="空置优惠资格">
+          <el-tag :type="customerInfo?.vacantEligible ? 'success' : 'info'" size="small">
+            {{ customerInfo?.vacantEligible ? '可选用' : '需装修报备' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="计费总区间">{{ billingInfo.billableFromMonth }} ~ {{ billingInfo.billableToMonth }}</el-descriptions-item>
+        <el-descriptions-item label="本次起缴月">{{ billingInfo.feeStartMonth }}</el-descriptions-item>
+        <el-descriptions-item label="本次截止月">{{ billingInfo.feeEndMonth }}</el-descriptions-item>
         <el-descriptions-item label="累计计费月数">{{ billingInfo.totalBillableMonths }}</el-descriptions-item>
         <el-descriptions-item label="已缴费月数">{{ billingInfo.paidMonths }}</el-descriptions-item>
-        <el-descriptions-item label="剩余应交费月份">
+        <el-descriptions-item label="累计欠费月份">
           <el-tag :type="billingInfo.remainingMonths > 0 ? 'danger' : 'success'">{{ billingInfo.remainingMonths }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="欠费金额">
+          <span class="amount">{{ ((billingInfo.arrearsAmount ?? 0) / 100).toFixed(2) }} 元</span>
         </el-descriptions-item>
         <el-descriptions-item label="房屋面积">{{ (billingInfo.houseAreaSnapshot / 100).toFixed(2) }}㎡</el-descriptions-item>
         <el-descriptions-item label="单价">{{ (billingInfo.unitPriceSnapshot / 100).toFixed(2) }} 元/㎡/月</el-descriptions-item>
-        <el-descriptions-item label="应交金额">
+        <el-descriptions-item label="本次应交">
           <span class="amount">{{ (billingInfo.receivableAmount / 100).toFixed(2) }} 元</span>
         </el-descriptions-item>
       </el-descriptions>
@@ -81,6 +92,7 @@ const roomNo = ref('');
 const loading = ref(false);
 const charging = ref(false);
 const billingInfo = ref<Record<string, any> | null>(null);
+const customerInfo = ref<Record<string, any> | null>(null);
 const months = ref(1);
 const startMonth = ref('');
 const receiptVisible = ref(false);
@@ -96,15 +108,17 @@ async function preview() {
   }
   loading.value = true;
   try {
-    const data = await http.post<never, { billingInfo: Record<string, any> }>('/fees/preview/property', {
+    const data = await http.post<never, { customer: Record<string, any>; billingInfo: Record<string, any> }>('/fees/preview/property', {
       projectId: String(projectId.value),
       roomNo: roomNo.value,
     });
+    customerInfo.value = data.customer;
     billingInfo.value = data.billingInfo;
     months.value = data.billingInfo.remainingMonths;
     startMonth.value = data.billingInfo.feeStartMonth;
   } catch {
     billingInfo.value = null;
+    customerInfo.value = null;
   } finally {
     loading.value = false;
   }
@@ -137,6 +151,7 @@ async function submit() {
     receiptVisible.value = true;
     ElMessage.success(`续费成功，单据编号 ${data.orderNo}`);
     billingInfo.value = null;
+    customerInfo.value = null;
     roomNo.value = '';
   } catch {
     // PMS-4005 已缴清 / PMS-4006 月数不合法 等由拦截器回显
@@ -149,7 +164,9 @@ onMounted(async () => {
   const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
   projects.value = p.list;
   projectId.value = p.list[0]?.id;
-  methods.value = await http.get<never, { code: string; name: string }[]>('/payment-methods');
+  methods.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/payment-methods')).filter(
+    (m) => m.enabled !== false,
+  );
 });
 </script>
 

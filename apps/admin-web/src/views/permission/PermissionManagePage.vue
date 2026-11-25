@@ -9,7 +9,7 @@
           <el-table-column prop="username" label="用户名" />
           <el-table-column prop="realName" label="姓名" />
           <el-table-column prop="roles" label="角色">
-            <template #default="{ row }">{{ (row.roles ?? []).join('、') }}</template>
+            <template #default="{ row }">{{ formatRoles(row.roles) }}</template>
           </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
@@ -130,6 +130,14 @@ const editingUser = ref<Record<string, any> | null>(null);
 const permissionRows = ref<Record<string, any>[]>([]);
 const allProjectsScope = ref(false);
 const scopeProjectIds = ref<number[]>([]);
+
+function formatRoles(roles: Array<string | { code?: string; name?: string }> | undefined) {
+  if (!roles?.length) return '—';
+  return roles
+    .map((r) => (typeof r === 'string' ? r : r.name || r.code || ''))
+    .filter(Boolean)
+    .join('、');
+}
 
 async function load() {
   users.value = await http.get<never, Record<string, any>[]>('/users');

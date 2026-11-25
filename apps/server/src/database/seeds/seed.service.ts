@@ -81,6 +81,7 @@ export class SeedService implements OnModuleInit {
         code: BuiltInRoles.FINANCE,
         name: '财务',
         permissions: [
+          'project:view',
           'customer:view',
           'charge:receipt:view',
           'statistic:monthly:view',
@@ -138,6 +139,24 @@ export class SeedService implements OnModuleInit {
     const permissionMap = new Map<string, PermissionEntity>();
     for (const p of await this.permissionRepo.find()) {
       permissionMap.set(p.code, p);
+    }
+
+    // 4.0 内置角色补齐缺失权限点（幂等，便于升级后解锁档案等新权限生效）
+    {
+      const { RolePermissionEntity } = await import('../entities/auth-entities');
+      const rpRepo = this.dataSource.getRepository(RolePermissionEntity);
+      for (const def of roleDefs) {
+        const role = roleMap.get(def.code);
+        if (!role) continue;
+        for (const code of def.permissions) {
+          const perm = permissionMap.get(code);
+          if (!perm) continue;
+          const exists = await rpRepo.findOne({ where: { companyId: company.id, roleId: role.id, permissionId: perm.id } });
+          if (!exists) {
+            await rpRepo.save(rpRepo.create({ companyId: company.id, roleId: role.id, permissionId: perm.id }));
+          }
+        }
+      }
     }
     const adminUser = await this.userRepo.findOne({ where: { companyId: company.id, username: 'admin' } });
     if (!adminUser) {

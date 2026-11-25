@@ -17,6 +17,9 @@
       <el-form-item label="年度" v-if="kind === 'yearly'">
         <el-date-picker v-model="year" type="year" value-format="YYYY" :clearable="false" />
       </el-form-item>
+      <el-form-item label="统计截止月" v-if="kind === 'arrears'">
+        <el-date-picker v-model="asOfMonth" type="month" value-format="YYYY-MM" :clearable="false" />
+      </el-form-item>
       <el-form-item label="时间范围" v-if="kind !== 'yearly' && kind !== 'arrears'">
         <el-date-picker v-model="range" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" />
       </el-form-item>
@@ -89,6 +92,7 @@ import { http } from '@/api/request';
 
 const kind = ref('monthly');
 const year = ref(String(new Date().getFullYear()));
+const asOfMonth = ref(new Date().toISOString().slice(0, 7));
 const range = ref<[string, string] | null>(null);
 const dataList = ref<Record<string, any>[]>([]);
 const summaryRows = ref<Record<string, any>[]>([]);
@@ -108,6 +112,7 @@ const dynamicCols = computed(() => {
 async function load() {
   const params: Record<string, any> = {};
   if (kind.value === 'yearly') params.year = year.value;
+  if (kind.value === 'arrears' && asOfMonth.value) params.asOf = asOfMonth.value;
   if (range.value && kind.value !== 'yearly' && kind.value !== 'arrears') {
     params.startTime = range.value[0];
     params.endTime = range.value[1];

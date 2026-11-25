@@ -4,8 +4,14 @@ import { Repository, In } from 'typeorm';
 import { PermissionOverrideType, PermissionType } from '@pms/shared';
 import { RoleEntity, PermissionEntity, RolePermissionEntity, UserPermissionOverrideEntity, UserRoleEntity, UserProjectScopeEntity, UserEntity } from '../../database/entities/auth-entities';
 
+export interface ResolvedRole {
+  code: string;
+  name: string;
+}
+
 export interface ResolvedPermissions {
   permissions: Set<string>;
+  roles: ResolvedRole[];
   allProjectsScope: boolean;
   projectScopes: number[];
 }
@@ -30,9 +36,15 @@ export class PermissionService {
   async resolveForUser(companyId: number, userId: number): Promise<ResolvedPermissions> {
     const userRoles = await this.userRoleRepo.find({ where: { companyId, userId } });
     let permissionCodes = new Set<string>();
+    const roles: ResolvedRole[] = [];
     if (userRoles.length > 0) {
+      const roleIds = userRoles.map((r) => r.roleId);
+      const roleEntities = await this.roleRepo.find({ where: { companyId, id: In(roleIds) } });
+      for (const role of roleEntities) {
+        roles.push({ code: role.code, name: role.name });
+      }
       const rolePerms = await this.rolePermissionRepo.find({
-        where: { companyId, roleId: In(userRoles.map((r) => r.roleId)) },
+        where: { companyId, roleId: In(roleIds) },
       });
       const permIds = [...new Set(rolePerms.map((rp) => rp.permissionId))];
       if (permIds.length > 0) {
@@ -54,6 +66,7 @@ export class PermissionService {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     return {
       permissions: permissionCodes,
+      roles,
       allProjectsScope: user?.allProjectsScope ?? false,
       projectScopes: scope.map((s) => s.projectId),
     };

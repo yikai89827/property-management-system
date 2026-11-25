@@ -49,12 +49,20 @@ export class FeeCalculationController {
     const ctx = await this.feeCalculationService.resolveParameters(this.companyId(), projectId);
     const arrearsMonths = this.feeCalculationService.arrearsMonthsFor(customer, ledgers);
     const feeItems = this.feeCalculationService.calcDeliveryFees(customer.houseArea, arrearsMonths, ctx);
+    const vacantEligible = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
+    const feeStartMonth = FeeCalculationService.monthOf(customer.feeStartDate);
+    const feeEndMonth = FeeCalculationService.monthOf(new Date().toISOString());
     return {
       customer: {
         ...this.customerService.toSummary(customer),
         houseStatusLabel: HOUSE_STATUS_LABELS[customer.houseStatus as keyof typeof HOUSE_STATUS_LABELS],
+        feeStartDate: customer.feeStartDate,
+        decorateDate: customer.decorateDate ?? null,
+        vacantEligible,
       },
       arrearsMonths,
+      feeStartMonth,
+      feeEndMonth,
       feeItems,
       totalReceivable: feeItems.reduce((sum, f) => sum + f.amount, 0),
     };
@@ -80,18 +88,26 @@ export class FeeCalculationController {
     const feeEndMonth = FeeCalculationService.addMonths(feeStartMonth, months - 1);
     const unitPrice = ctx.unitPrice;
     const receivableAmount = Math.round((customer.houseArea * unitPrice) / 100) * months;
+    const vacantEligible = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
 
     return {
       customer: {
         ...this.customerService.toSummary(customer),
         houseStatusLabel: HOUSE_STATUS_LABELS[customer.houseStatus as keyof typeof HOUSE_STATUS_LABELS],
+        feeStartDate: customer.feeStartDate,
+        decorateDate: customer.decorateDate ?? null,
+        vacantEligible,
       },
       billingInfo: {
         feeStartMonth,
         feeEndMonth,
+        billableFromMonth: FeeCalculationService.monthOf(customer.feeStartDate),
+        billableToMonth: FeeCalculationService.monthOf(new Date().toISOString()),
         totalBillableMonths,
         paidMonths,
         remainingMonths,
+        arrearsMonths: remainingMonths,
+        arrearsAmount: Math.round((customer.houseArea * unitPrice) / 100) * remainingMonths,
         houseAreaSnapshot: customer.houseArea,
         unitPriceSnapshot: unitPrice,
         months,
@@ -103,20 +119,24 @@ export class FeeCalculationController {
   /** 客户欠费状态查询（口径与台账一致） */
   @RequirePermissions(PermissionCodes.CUSTOMER_VIEW)
   @Get('fee-status')
-  async feeStatus(@Query('customerId') customerId: string) {
+  async feeStatus(@Query('customerId') customerId: string, @Query('asOf') asOf?: string) {
     const customer = await this.customerService.getOrThrow(this.companyId(), Number(customerId));
     const ledgers = await this.ledgerRepo.find({ where: { companyId: this.companyId(), customerId: customer.id } });
-    const totalBillableMonths = this.feeCalculationService.totalBillableMonths(customer.feeStartDate);
-    const paidMonths = this.feeCalculationService.paidMonths(ledgers);
+    const asOfMonth = asOf && /^\d{4}-\d{2}$/.test(asOf) ? asOf : FeeCalculationService.monthOf(new Date().toISOString());
+    const feeStartMonth = FeeCalculationService.monthOf(customer.feeStartDate);
+    const totalBillableMonths = this.feeCalculationService.totalBillableMonthsAsOf(customer.feeStartDate, asOfMonth);
+    const paidMonths = this.feeCalculationService.paidMonthsUpTo(ledgers, asOfMonth);
     const remainingMonths = Math.max(0, totalBillableMonths - paidMonths);
     const ctx = await this.feeCalculationService.resolveParameters(this.companyId(), customer.projectId);
     return {
-      feeStartMonth: customer.feeStartDate.slice(0, 7),
+      feeStartMonth,
+      feeEndMonth: asOfMonth,
       totalBillableMonths,
       paidMonths,
       remainingMonths,
       arrearsMonths: remainingMonths,
       arrearsAmount: Math.round((customer.houseArea * ctx.unitPrice) / 100) * remainingMonths,
+      unitPrice: ctx.unitPrice,
       paidLedgers: ledgers.map((l) => ({ startMonth: l.startMonth, endMonth: l.endMonth, months: l.months, status: l.status })),
     };
   }

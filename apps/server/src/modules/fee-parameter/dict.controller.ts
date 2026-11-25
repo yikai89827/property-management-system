@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 import { PermissionCodes } from '@pms/shared';
@@ -26,7 +26,12 @@ class DictCreateDto {
   enabled?: boolean;
 }
 
-/** 字典管理接口（费用类别/收款方式）：新增类别后其他缴费立即可选且零代码变更 */
+class DictToggleDto {
+  @IsBoolean()
+  enabled!: boolean;
+}
+
+/** 字典管理接口（费用类别/收款方式）：停用后缴费页不可选，历史单据仍可回显 */
 @ApiTags('dicts')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -37,10 +42,13 @@ export class DictController {
     @InjectRepository(PaymentMethodEntity) private readonly paymentMethodRepo: Repository<PaymentMethodEntity>,
   ) {}
 
-  /** 缴费页只读字典，登录即可；增删改仍要 DICT_MANAGE */
+  /** 缴费页只读字典，登录即可；增改仍要 DICT_MANAGE */
   @Get('fee-categories')
   listFeeCategories() {
-    return this.feeCategoryRepo.find({ where: { companyId: TenantContext.getCompanyId()! } });
+    return this.feeCategoryRepo.find({
+      where: { companyId: TenantContext.getCompanyId()! },
+      order: { code: 'ASC' },
+    });
   }
 
   @RequirePermissions(PermissionCodes.DICT_MANAGE)
@@ -50,12 +58,28 @@ export class DictController {
     const companyId = TenantContext.getCompanyId()!;
     const exists = await this.feeCategoryRepo.findOne({ where: { companyId, code: dto.code } });
     if (exists) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '费用类别编码已存在');
-    return this.feeCategoryRepo.save(this.feeCategoryRepo.create({ companyId, code: dto.code, name: dto.name, enabled: dto.enabled ?? true }));
+    return this.feeCategoryRepo.save(
+      this.feeCategoryRepo.create({ companyId, code: dto.code, name: dto.name, enabled: dto.enabled ?? true }),
+    );
+  }
+
+  @RequirePermissions(PermissionCodes.DICT_MANAGE)
+  @Audit('FEE_CATEGORY_TOGGLE')
+  @Patch('fee-categories/:id')
+  async toggleFeeCategory(@Param('id') id: string, @Body() dto: DictToggleDto) {
+    const companyId = TenantContext.getCompanyId()!;
+    const row = await this.feeCategoryRepo.findOne({ where: { id: Number(id), companyId } });
+    if (!row) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '费用类别不存在');
+    row.enabled = dto.enabled;
+    return this.feeCategoryRepo.save(row);
   }
 
   @Get('payment-methods')
   listPaymentMethods() {
-    return this.paymentMethodRepo.find({ where: { companyId: TenantContext.getCompanyId()! } });
+    return this.paymentMethodRepo.find({
+      where: { companyId: TenantContext.getCompanyId()! },
+      order: { code: 'ASC' },
+    });
   }
 
   @RequirePermissions(PermissionCodes.DICT_MANAGE)
@@ -65,6 +89,19 @@ export class DictController {
     const companyId = TenantContext.getCompanyId()!;
     const exists = await this.paymentMethodRepo.findOne({ where: { companyId, code: dto.code } });
     if (exists) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '收款方式编码已存在');
-    return this.paymentMethodRepo.save(this.paymentMethodRepo.create({ companyId, code: dto.code, name: dto.name, enabled: dto.enabled ?? true }));
+    return this.paymentMethodRepo.save(
+      this.paymentMethodRepo.create({ companyId, code: dto.code, name: dto.name, enabled: dto.enabled ?? true }),
+    );
+  }
+
+  @RequirePermissions(PermissionCodes.DICT_MANAGE)
+  @Audit('PAYMENT_METHOD_TOGGLE')
+  @Patch('payment-methods/:id')
+  async togglePaymentMethod(@Param('id') id: string, @Body() dto: DictToggleDto) {
+    const companyId = TenantContext.getCompanyId()!;
+    const row = await this.paymentMethodRepo.findOne({ where: { id: Number(id), companyId } });
+    if (!row) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '收款方式不存在');
+    row.enabled = dto.enabled;
+    return this.paymentMethodRepo.save(row);
   }
 }

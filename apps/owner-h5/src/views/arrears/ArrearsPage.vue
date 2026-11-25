@@ -3,11 +3,12 @@
     <van-nav-bar title="我的欠费" left-text="重新验证" @click-left="reVerify" />
     <div v-if="arrears" class="content">
       <van-cell-group inset v-if="arrears.remainingMonths > 0">
-        <van-cell title="物业费欠费月数" :value="`${arrears.remainingMonths} 个月`" />
-        <van-cell title="物业费欠费金额" :value="`${(arrears.arrearsAmount / 100).toFixed(2)} 元`" value-class="amount" />
-        <van-cell title="物业费起始月" :value="arrears.feeStartMonth" />
+        <van-cell title="计费起始月" :value="arrears.feeStartMonth" />
+        <van-cell title="计费截止月" :value="arrears.feeEndMonth ?? '—'" />
         <van-cell title="累计计费月数" :value="`${arrears.totalBillableMonths} 个月`" />
-        <van-cell title="已缴费月数" :value="`${arrears.paidMonths} 个月`" />
+        <van-cell title="累计已缴费月数" :value="`${arrears.paidMonths} 个月`" />
+        <van-cell title="累计欠费月份" :value="`${arrears.remainingMonths} 个月`" />
+        <van-cell title="欠费金额" :value="`${(arrears.arrearsAmount / 100).toFixed(2)} 元`" value-class="amount" />
       </van-cell-group>
       <van-empty v-else description="您的物业费已缴清，感谢配合" image="success" />
 

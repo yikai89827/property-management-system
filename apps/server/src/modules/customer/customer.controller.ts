@@ -91,6 +91,50 @@ class ExtKeyDto {
   @IsOptional() @IsString() validationRule?: string;
 }
 
+class ResaleDto {
+  @IsString()
+  @MinLength(1)
+  name!: string;
+
+  @IsString()
+  phone!: string;
+
+  @IsString()
+  @MinLength(15)
+  idCard!: string;
+
+  @IsOptional()
+  @IsIn(Object.values(ResidentType))
+  residentType?: ResidentType;
+
+  @IsOptional()
+  @IsString()
+  contractDate?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+class DecorateFilingDto {
+  @IsString()
+  startDate!: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+class CloseDecorateDto {
+  @IsOptional()
+  @IsString()
+  endDate?: string;
+}
+
 @ApiTags('customers')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -184,6 +228,47 @@ export class CustomerController {
   @Get('customers/:id/change-logs')
   changeLogs(@Param('id') id: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
     return this.customerService.changeLogs(this.companyId(), Number(id), page ? Number(page) : undefined, pageSize ? Number(pageSize) : undefined);
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)
+  @Audit('CUSTOMER_CONFIRM_PROFILE')
+  @Post('customers/:id/confirm-profile')
+  confirmProfile(@Param('id') id: string) {
+    return this.customerService.confirmProfile(this.companyId(), this.userId(), Number(id));
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_PROFILE_UNLOCK)
+  @Audit('CUSTOMER_UNLOCK_PROFILE')
+  @Post('customers/:id/unlock-profile')
+  unlockProfile(@Param('id') id: string) {
+    return this.customerService.unlockProfile(this.companyId(), this.userId(), Number(id));
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)
+  @Audit('CUSTOMER_RESALE')
+  @Post('customers/:id/resale')
+  resale(@Param('id') id: string, @Body() dto: ResaleDto) {
+    return this.customerService.resale(this.companyId(), this.userId(), Number(id), dto);
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_VIEW)
+  @Get('customers/:id/decorate-filings')
+  listDecorateFilings(@Param('id') id: string) {
+    return this.customerService.listDecorateFilings(this.companyId(), Number(id));
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)
+  @Audit('DECORATE_FILING_CREATE')
+  @Post('customers/:id/decorate-filings')
+  createDecorateFiling(@Param('id') id: string, @Body() dto: DecorateFilingDto) {
+    return this.customerService.createDecorateFiling(this.companyId(), this.userId(), Number(id), dto);
+  }
+
+  @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)
+  @Audit('DECORATE_FILING_CLOSE')
+  @Post('customers/:id/decorate-filings/:filingId/close')
+  closeDecorateFiling(@Param('id') id: string, @Param('filingId') filingId: string, @Body() dto: CloseDecorateDto) {
+    return this.customerService.closeDecorateFiling(this.companyId(), Number(id), Number(filingId), dto.endDate);
   }
 
   @RequirePermissions(PermissionCodes.CUSTOMER_CREATE)

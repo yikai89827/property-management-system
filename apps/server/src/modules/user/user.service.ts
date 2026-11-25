@@ -30,7 +30,7 @@ export class UserService {
     const users = await this.userRepo.find({ where: { companyId } });
     const roles = await this.userRoleRepo.find({ where: { companyId } });
     const roleEntities = await this.roleRepo.find({ where: { companyId } });
-    const roleMap = new Map(roleEntities.map((r) => [r.id, r.code]));
+    const roleMap = new Map(roleEntities.map((r) => [r.id, { code: r.code, name: r.name }]));
     const scopes = await this.scopeRepo.find({ where: { companyId } });
     return users.map((u) => ({
       id: u.id,
@@ -39,7 +39,10 @@ export class UserService {
       status: u.status,
       allProjectsScope: u.allProjectsScope,
       projectScopes: scopes.filter((s) => s.userId === u.id).map((s) => s.projectId),
-      roles: roles.filter((r) => r.userId === u.id).map((r) => roleMap.get(r.roleId)).filter(Boolean),
+      roles: roles
+        .filter((r) => r.userId === u.id)
+        .map((r) => roleMap.get(r.roleId))
+        .filter(Boolean),
     }));
   }
 

@@ -8,6 +8,8 @@ import { TenantService } from '../../common/tenant/tenant.service';
 import {
   CustomerChangeLogEntity,
   CustomerEntity,
+  DecorateFilingEntity,
+  OwnershipHistoryEntity,
   PersonEntity,
   ProjectEntity,
   VehiclePlateEntity,
@@ -16,6 +18,20 @@ import { ExtKeyRegistryEntity } from '../../database/entities/auth-entities';
 import { ReceiptOrderEntity } from '../../database/entities/charging-entities';
 
 const SENSITIVE_FIELDS = new Set(['phone', 'idCard']);
+/** 档案确认后需解锁才能改的核心字段 */
+const PROTECTED_PROFILE_FIELDS = new Set([
+  'name',
+  'phone',
+  'idCard',
+  'roomNo',
+  'houseArea',
+  'feeStartDate',
+  'contractDate',
+  'decorateDate',
+  'residentType',
+  'projectId',
+]);
+const PROFILE_UNLOCK_TTL_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class CustomerService {
@@ -27,10 +43,20 @@ export class CustomerService {
     @InjectRepository(ProjectEntity) private readonly projectRepo: Repository<ProjectEntity>,
     @InjectRepository(VehiclePlateEntity) private readonly plateRepo: Repository<VehiclePlateEntity>,
     @InjectRepository(CustomerChangeLogEntity) private readonly changeLogRepo: Repository<CustomerChangeLogEntity>,
+    @InjectRepository(OwnershipHistoryEntity) private readonly ownershipRepo: Repository<OwnershipHistoryEntity>,
+    @InjectRepository(DecorateFilingEntity) private readonly decorateRepo: Repository<DecorateFilingEntity>,
     @InjectRepository(ReceiptOrderEntity) private readonly receiptRepo: Repository<ReceiptOrderEntity>,
     @InjectRepository(ExtKeyRegistryEntity) private readonly extKeyRepo: Repository<ExtKeyRegistryEntity>,
     private readonly tenantService: TenantService,
   ) {}
+
+  isProfileLocked(customer: CustomerEntity): boolean {
+    if (!customer.profileConfirmedAt) return false;
+    if (customer.profileUnlockUntil && new Date(customer.profileUnlockUntil).getTime() > Date.now()) {
+      return false;
+    }
+    return true;
+  }
 
   /**
    * 按身份证 upsert 自然人：公司内身份证唯一。
@@ -232,17 +258,206 @@ export class CustomerService {
       ? await this.projectRepo.find({ where: { id: In(siblingProjectIds) } })
       : [];
     const siblingProjectMap = new Map(siblingProjects.map((p) => [p.id, p.name]));
+    const ownershipHistory = await this.ownershipRepo.find({
+      where: { companyId, customerId: id },
+      order: { transferredAt: 'DESC' },
+    });
+    const decorateFilings = await this.decorateRepo.find({
+      where: { companyId, customerId: id },
+      order: { createdAt: 'DESC' },
+    });
+    const activeFiling = decorateFilings.find((f) => f.status === 'active');
     const view = this.toView(customer, project?.name);
     return {
       ...view,
       plates: plates.map((p) => p.plateNo),
       relatedProperties: siblings.map((c) => this.toSummary(c, siblingProjectMap.get(c.projectId))),
+      ownershipHistory,
+      decorateFilings,
+      activeDecorateFiling: activeFiling ?? null,
+      vacantEligible: !!activeFiling,
     };
+  }
+
+  async confirmProfile(companyId: number, userId: number, id: number) {
+    const customer = await this.getOrThrow(companyId, id);
+    if (customer.profileConfirmedAt) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '该客户档案已确认');
+    }
+    customer.profileConfirmedAt = new Date().toISOString();
+    customer.profileUnlockUntil = undefined;
+    await this.customerRepo.save(customer);
+    await this.changeLogRepo.save(
+      this.changeLogRepo.create({
+        companyId,
+        customerId: id,
+        operatorId: userId,
+        fieldName: 'profileConfirmed',
+        oldValue: '',
+        newValue: customer.profileConfirmedAt,
+        changedAt: customer.profileConfirmedAt,
+      }),
+    );
+    const project = await this.projectRepo.findOne({ where: { id: customer.projectId } });
+    return this.toView(customer, project?.name);
+  }
+
+  async unlockProfile(companyId: number, userId: number, id: number) {
+    const customer = await this.getOrThrow(companyId, id);
+    if (!customer.profileConfirmedAt) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '档案尚未确认，无需解锁');
+    }
+    const until = new Date(Date.now() + PROFILE_UNLOCK_TTL_MS).toISOString();
+    customer.profileUnlockUntil = until;
+    await this.customerRepo.save(customer);
+    await this.changeLogRepo.save(
+      this.changeLogRepo.create({
+        companyId,
+        customerId: id,
+        operatorId: userId,
+        fieldName: 'profileUnlock',
+        oldValue: '',
+        newValue: until,
+        changedAt: new Date().toISOString(),
+      }),
+    );
+    const project = await this.projectRepo.findOne({ where: { id: customer.projectId } });
+    return this.toView(customer, project?.name);
+  }
+
+  /** 房屋转售：换绑业主身份，台账/收据仍挂本房源 customerId */
+  async resale(
+    companyId: number,
+    userId: number,
+    id: number,
+    input: {
+      name: string;
+      phone: string;
+      idCard: string;
+      residentType?: ResidentType;
+      contractDate?: string;
+      remark?: string;
+    },
+  ) {
+    const customer = await this.getOrThrow(companyId, id);
+    const fromName = customer.name;
+    const fromIdCardMasked = CryptoService.maskIdCard(this.crypto.decrypt(customer.idCardEncrypted));
+    const fromPersonId = customer.personId;
+    const person = await this.ensurePerson(companyId, {
+      name: input.name,
+      phone: input.phone,
+      idCard: input.idCard,
+    });
+    const idCard = input.idCard.trim().toUpperCase();
+    await this.ownershipRepo.save(
+      this.ownershipRepo.create({
+        companyId,
+        customerId: id,
+        fromPersonId,
+        toPersonId: person.id,
+        fromName,
+        fromIdCardMasked,
+        toName: person.name,
+        toIdCardMasked: CryptoService.maskIdCard(idCard),
+        transferredAt: new Date().toISOString(),
+        operatorId: userId,
+        remark: input.remark,
+      }),
+    );
+    customer.personId = person.id;
+    customer.name = person.name;
+    customer.phoneEncrypted = person.phoneEncrypted;
+    customer.phoneBlindIndex = person.phoneBlindIndex;
+    customer.idCardEncrypted = person.idCardEncrypted;
+    customer.idCardBlindIndex = person.idCardBlindIndex;
+    if (input.residentType) customer.residentType = input.residentType;
+    if (input.contractDate !== undefined) customer.contractDate = input.contractDate;
+    // 新业主需重新确认档案
+    customer.profileConfirmedAt = undefined;
+    customer.profileUnlockUntil = undefined;
+    await this.customerRepo.save(customer);
+    await this.changeLogRepo.save(
+      this.changeLogRepo.create({
+        companyId,
+        customerId: id,
+        operatorId: userId,
+        fieldName: 'resale',
+        oldValue: fromName,
+        newValue: person.name,
+        changedAt: new Date().toISOString(),
+      }),
+    );
+    const project = await this.projectRepo.findOne({ where: { id: customer.projectId } });
+    return this.toView(customer, project?.name);
+  }
+
+  async listDecorateFilings(companyId: number, customerId: number) {
+    await this.getOrThrow(companyId, customerId);
+    return this.decorateRepo.find({
+      where: { companyId, customerId },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async createDecorateFiling(
+    companyId: number,
+    userId: number,
+    customerId: number,
+    input: { startDate: string; endDate?: string; remark?: string },
+  ) {
+    const customer = await this.getOrThrow(companyId, customerId);
+    if (!input.startDate) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '装修开始日期必填');
+    }
+    // 关闭既有 active
+    const actives = await this.decorateRepo.find({ where: { companyId, customerId, status: 'active' } });
+    for (const a of actives) {
+      a.status = 'closed';
+      if (!a.endDate) a.endDate = input.startDate;
+      await this.decorateRepo.save(a);
+    }
+    const filing = await this.decorateRepo.save(
+      this.decorateRepo.create({
+        companyId,
+        customerId,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        status: 'active',
+        remark: input.remark,
+        createdBy: userId,
+      }),
+    );
+    customer.decorateDate = input.startDate;
+    await this.customerRepo.save(customer);
+    return filing;
+  }
+
+  async closeDecorateFiling(companyId: number, customerId: number, filingId: number, endDate?: string) {
+    await this.getOrThrow(companyId, customerId);
+    const filing = await this.decorateRepo.findOne({ where: { id: filingId, companyId, customerId } });
+    if (!filing) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '装修报备不存在');
+    filing.status = 'closed';
+    filing.endDate = endDate ?? new Date().toISOString().slice(0, 10);
+    return this.decorateRepo.save(filing);
+  }
+
+  /** 是否存在有效装修报备（空置优惠资格） */
+  async hasActiveDecorateFiling(companyId: number, customerId: number): Promise<boolean> {
+    const n = await this.decorateRepo.count({ where: { companyId, customerId, status: 'active' } });
+    return n > 0;
   }
 
   /** 客户修改（自动留痕：字段名/旧值/新值，敏感字段脱敏存留） */
   async update(companyId: number, userId: number, id: number, patch: Record<string, unknown>) {
     const customer = await this.getOrThrow(companyId, id);
+    const locked = this.isProfileLocked(customer);
+    const touchingProtected = Object.keys(patch).some((k) => PROTECTED_PROFILE_FIELDS.has(k) && patch[k] !== undefined);
+    if (locked && touchingProtected) {
+      throw new BusinessException(
+        ErrorCodes.FORBIDDEN,
+        '档案已确认锁定，请先由授权人员解锁后再修改核心信息',
+      );
+    }
     const trackable: Record<string, unknown> = {};
     const allowedFields: { [k: string]: (v: unknown) => void } = {
       name: (v) => {
@@ -323,6 +538,11 @@ export class CustomerService {
       customer.phoneEncrypted = person.phoneEncrypted;
       customer.phoneBlindIndex = person.phoneBlindIndex;
       customer.name = person.name;
+    }
+
+    // 解锁窗口：成功修改核心字段后立即重新上锁
+    if (customer.profileConfirmedAt && touchingProtected && Object.keys(trackable).length > 0) {
+      customer.profileUnlockUntil = undefined;
     }
 
     await this.customerRepo.save(customer);
@@ -495,6 +715,7 @@ export class CustomerService {
   }
 
   toView(c: CustomerEntity, projectName?: string) {
+    const locked = this.isProfileLocked(c);
     return {
       id: c.id,
       personId: c.personId,
@@ -511,6 +732,9 @@ export class CustomerService {
       feeStartDate: c.feeStartDate,
       decorateDate: c.decorateDate,
       deliveryDate: c.deliveryDate,
+      profileConfirmedAt: c.profileConfirmedAt ?? null,
+      profileUnlockUntil: c.profileUnlockUntil ?? null,
+      profileLocked: locked,
       ext: c.ext ? JSON.parse(c.ext) : undefined,
     };
   }

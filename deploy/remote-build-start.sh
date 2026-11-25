@@ -47,7 +47,7 @@ JWT_REFRESH_SECRET=${JWT_R}
 JWT_OWNER_TTL=7200
 DEFAULT_COMPANY_NAME=株洲桌信物业管理有限责任公司
 RECEIPT_NO_PREFIX=PM
-H5_BASE_URL=http://8.163.8.22/h5
+H5_BASE_URL=http://www.ykbox.online/h5
 EOF
   echo "已生成 ${ENV_FILE}"
 fi

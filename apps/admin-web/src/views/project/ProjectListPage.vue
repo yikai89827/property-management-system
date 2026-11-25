@@ -60,18 +60,20 @@
     </el-dialog>
 
     <el-dialog v-model="qrVisible" title="项目缴费二维码（业主扫码进入身份验证）" width="420">
-      <div class="qr-wrap">
+      <div class="qr-wrap" v-loading="qrLoading">
         <canvas ref="qrCanvas" width="260" height="260" />
+        <p class="qr-label">{{ qrLabel }}</p>
         <p class="qr-url">{{ qrUrl }}</p>
-        <el-button type="primary" @click="downloadQr">下载二维码物料</el-button>
+        <el-button type="primary" :disabled="!qrReady" @click="downloadQr">下载二维码物料</el-button>
       </div>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { nextTick, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
+import QRCode from 'qrcode';
 import { COMMON_STATUS_LABELS } from '@pms/shared';
 import { http } from '@/api/request';
 import { useAuthStore } from '@/stores/auth';
@@ -91,6 +93,9 @@ const form = reactive({ name: '', landArea: 100, address: '' });
 const qrVisible = ref(false);
 const qrCanvas = ref<HTMLCanvasElement>();
 const qrUrl = ref('');
+const qrLabel = ref('');
+const qrLoading = ref(false);
+const qrReady = ref(false);
 
 async function load() {
   loading.value = true;
@@ -159,37 +164,36 @@ async function genQr(row: Record<string, unknown>) {
       ? `${protocol}//${hostname}:5171`
       : `${protocol}//${hostname}/h5`;
   qrUrl.value = `${ownerBase}/#/verify?project=${row.id}`;
+  qrLabel.value = `项目 ${row.name ?? row.id} 缴费入口`;
+  qrReady.value = false;
   qrVisible.value = true;
-  await new Promise((r) => setTimeout(r, 100));
-  drawQr(qrUrl.value);
+  await nextTick();
+  await drawQr(qrUrl.value);
 }
 
-function drawQr(text: string) {
+async function drawQr(text: string) {
   const canvas = qrCanvas.value;
   if (!canvas) return;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, 260, 260);
-  ctx.fillStyle = '#000';
-  let seed = 0;
-  for (let i = 0; i < text.length; i++) seed = (seed * 31 + text.charCodeAt(i)) % 2147483647;
-  const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-  for (let y = 0; y < 13; y++) {
-    for (let x = 0; x < 13; x++) {
-      const corner = (y < 3 && x < 3) || (y < 3 && x > 9) || (y > 9 && x < 3);
-      if (corner ? (x % 2 === 0) === (y % 2 === 0) : rand() > 0.5) {
-        ctx.fillRect(30 + x * 16, 30 + y * 16, 14, 14);
-      }
-    }
+  qrLoading.value = true;
+  try {
+    await QRCode.toCanvas(canvas, text, {
+      width: 260,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#000000', light: '#ffffff' },
+    });
+    qrReady.value = true;
+  } catch {
+    qrReady.value = false;
+    ElMessage.error('二维码生成失败，请重试');
+  } finally {
+    qrLoading.value = false;
   }
-  ctx.font = '10px sans-serif';
-  ctx.fillStyle = '#666';
-  ctx.fillText(`项目 ${text.split('project=')[1]} 缴费入口`, 60, 250);
 }
 
 function downloadQr() {
   const canvas = qrCanvas.value;
-  if (!canvas) return;
+  if (!canvas || !qrReady.value) return;
   const link = document.createElement('a');
   link.download = 'project-payment-qr.png';
   link.href = canvas.toDataURL('image/png');
@@ -201,6 +205,7 @@ onMounted(load);
 
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
-.qr-wrap { text-align: center; }
+.qr-wrap { text-align: center; min-height: 320px; }
+.qr-label { margin: 8px 0 4px; font-size: 13px; color: var(--el-text-color-regular); }
 .qr-url { font-size: 12px; color: #909399; word-break: break-all; }
 </style>

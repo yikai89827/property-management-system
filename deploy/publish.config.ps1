@@ -8,5 +8,5 @@ $PublishConfig = @{
   # 远端项目目录
   RemoteDir = '/opt/pms'
   # 公网访问地址（仅用于发布结束提示）
-  PublicUrl = 'http://8.163.8.22'
+  PublicUrl = 'http://www.ykbox.online'
 }

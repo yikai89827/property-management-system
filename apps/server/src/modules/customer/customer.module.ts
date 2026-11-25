@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   CustomerChangeLogEntity,
   CustomerEntity,
+  DecorateFilingEntity,
+  OwnershipHistoryEntity,
   PersonEntity,
   ProjectEntity,
   VehiclePlateEntity,
@@ -21,6 +23,8 @@ import { CustomerController } from './customer.controller';
       ProjectEntity,
       VehiclePlateEntity,
       CustomerChangeLogEntity,
+      OwnershipHistoryEntity,
+      DecorateFilingEntity,
       ExtKeyRegistryEntity,
       ReceiptOrderEntity,
     ]),

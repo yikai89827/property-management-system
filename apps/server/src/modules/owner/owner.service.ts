@@ -186,11 +186,13 @@ export class OwnerService {
       where: { companyId, customerId },
     });
     const ctx = await this.feeCalculationService.resolveParameters(companyId, customer.projectId);
+    const feeEndMonth = new Date().toISOString().slice(0, 7);
     const totalBillableMonths = this.feeCalculationService.totalBillableMonths(customer.feeStartDate);
     const paidMonths = this.feeCalculationService.paidMonths(ledgers);
     const remainingMonths = Math.max(0, totalBillableMonths - paidMonths);
     return {
       feeStartMonth: customer.feeStartDate.slice(0, 7),
+      feeEndMonth,
       totalBillableMonths,
       paidMonths,
       remainingMonths,
