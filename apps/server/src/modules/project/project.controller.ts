@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
-import { PermissionCodes } from '@pms/shared';
+import { IsEnum, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
+import { FeeParameterCode, PermissionCodes } from '@pms/shared';
 import { RequirePermissions } from '../../common/guards/require-permissions.decorator';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { Audit } from '../../common/interceptors/audit.decorator';
 import { ProjectService } from './project.service';
 
 class CreateProjectDto {
@@ -41,6 +42,14 @@ class UpdateProjectDto {
   status?: string;
 }
 
+class UpdateProjectFeeDto {
+  @IsEnum(FeeParameterCode)
+  itemCode!: FeeParameterCode;
+
+  @IsNumber()
+  value!: number;
+}
+
 @ApiTags('projects')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -71,6 +80,27 @@ export class ProjectController {
   @Get(':id')
   detail(@Param('id') id: string) {
     return this.projectService.detail(TenantContext.getCompanyId()!, Number(id));
+  }
+
+  /** 项目费用参数（物业费单价等，项目级覆盖公司默认） */
+  @RequirePermissions(PermissionCodes.PROJECT_VIEW)
+  @Get(':id/fee-parameters')
+  feeParameters(@Param('id') id: string) {
+    return this.projectService.feeParameters(TenantContext.getCompanyId()!, Number(id));
+  }
+
+  /** 设定项目费用参数（版本化，仅影响新生成缴费单） */
+  @RequirePermissions(PermissionCodes.PROJECT_UPDATE)
+  @Audit('PROJECT_FEE_PARAMETER_UPDATE')
+  @Put(':id/fee-parameters')
+  updateFeeParameter(@Param('id') id: string, @Body() dto: UpdateProjectFeeDto) {
+    return this.projectService.updateFeeParameter(
+      TenantContext.getCompanyId()!,
+      TenantContext.getUserId()!,
+      Number(id),
+      dto.itemCode,
+      dto.value,
+    );
   }
 
   @RequirePermissions(PermissionCodes.PROJECT_UPDATE)

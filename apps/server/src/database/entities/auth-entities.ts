@@ -26,6 +26,10 @@ export class UserEntity {
   @Column({ name: 'disabled_at', nullable: true })
   disabledAt?: string;
 
+  /** 最近登录时间；为空表示从未登录过（允许物理删除） */
+  @Column({ name: 'last_login_at', nullable: true })
+  lastLoginAt?: string;
+
   /** 项目数据范围：是否全部项目 */
   @Column({ name: 'all_projects_scope', default: false })
   allProjectsScope!: boolean;

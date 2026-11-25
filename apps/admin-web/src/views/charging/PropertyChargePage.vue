@@ -2,10 +2,8 @@
   <el-card>
     <template #header>物业费续费工作台</template>
     <el-form inline>
-      <el-form-item label="项目">
-        <el-select v-model="projectId" style="width: 200px">
-          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-        </el-select>
+      <el-form-item label="当前项目">
+        <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
       </el-form-item>
       <el-form-item label="房号">
         <el-input v-model="roomNo" style="width: 140px" @keyup.enter="preview" />
@@ -82,12 +80,17 @@ import { onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { DISCOUNT_TYPE_LABELS } from '@pms/shared';
 import { http } from '@/api/request';
+import { useCurrentProject } from '@/composables/useCurrentProject';
 import ReceiptPreview from './ReceiptPreview.vue';
 
 const discountLabels = DISCOUNT_TYPE_LABELS;
-const projects = ref<{ id: number; name: string }[]>([]);
+const { projectName, requireProjectId } = useCurrentProject({
+  onChange: () => {
+    billingInfo.value = null;
+    customerInfo.value = null;
+  },
+});
 const methods = ref<{ code: string; name: string }[]>([]);
-const projectId = ref<number>();
 const roomNo = ref('');
 const loading = ref(false);
 const charging = ref(false);
@@ -102,14 +105,15 @@ const receiptBilling = ref<Record<string, any> | null>(null);
 const form = reactive({ discountType: '', discountYuan: 0, deductYuan: 0, paymentMethodCode: 'CASH' });
 
 async function preview() {
-  if (!projectId.value || !roomNo.value) {
-    ElMessage.warning('请选择项目并输入房号');
+  const pid = requireProjectId();
+  if (!pid || !roomNo.value) {
+    if (pid && !roomNo.value) ElMessage.warning('请输入房号');
     return;
   }
   loading.value = true;
   try {
     const data = await http.post<never, { customer: Record<string, any>; billingInfo: Record<string, any> }>('/fees/preview/property', {
-      projectId: String(projectId.value),
+      projectId: String(pid),
       roomNo: roomNo.value,
     });
     customerInfo.value = data.customer;
@@ -125,6 +129,8 @@ async function preview() {
 }
 
 async function submit() {
+  const pid = requireProjectId();
+  if (!pid) return;
   if (!months.value || !startMonth.value || !form.paymentMethodCode) {
     ElMessage.warning('请填写续费月数、起缴月与收款方式');
     return;
@@ -132,7 +138,7 @@ async function submit() {
   charging.value = true;
   try {
     const data = await http.post<never, Record<string, any>>('/charges/property', {
-      projectId: String(projectId.value),
+      projectId: String(pid),
       roomNo: roomNo.value,
       months: months.value,
       startMonth: startMonth.value,
@@ -144,7 +150,7 @@ async function submit() {
     receipt.value = data;
     receiptBilling.value = (data as Record<string, any>).billingInfo ?? billingInfo.value;
     receiptPayer.value = {
-      projectName: projects.value.find((p) => p.id === projectId.value)?.name ?? '',
+      projectName: projectName.value,
       discountType: form.discountType || undefined,
       paymentMethodName: methods.value.find((m) => m.code === form.paymentMethodCode)?.name,
     };
@@ -161,9 +167,6 @@ async function submit() {
 }
 
 onMounted(async () => {
-  const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
-  projects.value = p.list;
-  projectId.value = p.list[0]?.id;
   methods.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/payment-methods')).filter(
     (m) => m.enabled !== false,
   );

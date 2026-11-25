@@ -16,10 +16,16 @@
               <el-tag :type="row.status === 'active' ? 'success' : 'danger'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="数据范围">
+          <el-table-column label="数据范围" min-width="120">
             <template #default="{ row }">{{ row.allProjectsScope ? '全部项目' : `授权 ${row.projectScopes?.length ?? 0} 个项目` }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="320">
+          <el-table-column label="最近登录时间" width="170">
+            <template #default="{ row }">
+              <span v-if="row.lastLoginAt">{{ formatDateTime(row.lastLoginAt) }}</span>
+              <el-tag v-else type="info" size="small" effect="plain">从未登录</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="360">
             <template #default="{ row }">
               <el-button link type="primary" @click="openEditUser(row)">编辑</el-button>
               <el-button link type="warning" @click="openResetPassword(row)">重置密码</el-button>
@@ -29,6 +35,15 @@
                   <el-button link :type="row.status === 'active' ? 'danger' : 'success'">
                     {{ row.status === 'active' ? '停用' : '启用' }}
                   </el-button>
+                </template>
+              </el-popconfirm>
+              <el-popconfirm
+                v-if="row.canDelete"
+                title="确认删除该未使用账号？删除后不可恢复"
+                @confirm="deleteUser(row)"
+              >
+                <template #reference>
+                  <el-button link type="danger">删除</el-button>
                 </template>
               </el-popconfirm>
             </template>
@@ -59,7 +74,7 @@
             </template>
           </el-table-column>
           <el-table-column label="时间" width="170">
-            <template #default="{ row }">{{ row.createdAt?.slice(0, 19).replace('T', ' ') }}</template>
+            <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
@@ -154,6 +169,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { http } from '@/api/request';
+import { formatDateTime } from '@/utils/format';
 
 const tab = ref('users');
 const users = ref<Record<string, any>[]>([]);
@@ -180,6 +196,7 @@ function formatRoles(roles: Array<string | { code?: string; name?: string }> | u
     .filter(Boolean)
     .join('、');
 }
+
 
 async function load() {
   users.value = await http.get<never, Record<string, any>[]>('/users');
@@ -250,6 +267,12 @@ async function saveEditUser() {
 async function toggleUser(row: Record<string, any>) {
   await http.patch(`/users/${row.id}`, { status: row.status === 'active' ? 'disabled' : 'active' });
   ElMessage.success(row.status === 'active' ? '已停用（该账号登录态立即失效）' : '已启用');
+  await load();
+}
+
+async function deleteUser(row: Record<string, any>) {
+  await http.delete(`/users/${row.id}`);
+  ElMessage.success('账号已删除');
   await load();
 }
 

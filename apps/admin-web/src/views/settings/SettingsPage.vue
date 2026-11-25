@@ -1,7 +1,11 @@
 <template>
   <el-card>
     <template #header>系统配置（费用参数 / 字典）</template>
-    <h4>费用参数（调整仅对新生成缴费单生效，历史收款单不变）</h4>
+    <h4>公司默认费用参数</h4>
+    <p class="hint">
+      此处为全公司默认值；各小区可在「项目管理 → 费用设定」单独覆盖。调整仅对新生成缴费单生效，历史收款单不变。
+      住房：物业费按住房单价；装修管理费面积×90×0.02。门面一楼物业费面积×2、二楼×0.7；门面装修管理费面积×0.01×90；垃圾清运面积×2.5（共用）。
+    </p>
     <el-table :data="paramRows" border>
       <el-table-column prop="label" label="参数项" />
       <el-table-column label="当前值" width="160">
@@ -21,7 +25,7 @@
     <el-collapse style="margin-top: 12px">
       <el-collapse-item title="参数变更历史（版本化保留）">
         <el-timeline>
-          <el-timeline-item v-for="h in paramHistory" :key="h.id" :timestamp="h.effectiveAt?.slice(0, 19).replace('T', ' ')">
+          <el-timeline-item v-for="h in paramHistory" :key="h.id" :timestamp="formatDateTime(h.effectiveAt)">
             {{ paramLabels[h.itemCode] ?? h.itemCode }} → {{ formatParam(h.itemCode, h.value) }}（操作人 {{ h.operatorId ?? '系统' }}）
           </el-timeline-item>
         </el-timeline>
@@ -99,14 +103,18 @@ import { onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { FEE_PARAMETER_LABELS, FeeParameterCode } from '@pms/shared';
 import { http } from '@/api/request';
+import { formatDateTime } from '@/utils/format';
 
 const paramLabels = FEE_PARAMETER_LABELS;
 /** 显示换算：金额/平方米类参数以元展示 */
 const displayRules: Record<string, number> = {
   [FeeParameterCode.DEPOSIT_DECORATION_AMOUNT]: 100,
   [FeeParameterCode.DECORATION_MGMT_RATE]: 100,
+  [FeeParameterCode.DECORATION_MGMT_RATE_COMMERCIAL]: 100,
   [FeeParameterCode.GARBAGE_TRANSPORT_RATE]: 100,
   [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE]: 100,
+  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL]: 100,
+  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2]: 100,
 };
 
 const paramRows = ref<Record<string, any>[]>([]);
@@ -188,3 +196,11 @@ onMounted(async () => {
   await loadDicts();
 });
 </script>
+
+<style scoped>
+.hint {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+</style>

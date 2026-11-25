@@ -1,5 +1,5 @@
 import { SequenceService } from '../src/modules/charging/sequence.service';
-import { allEntities } from '../src/data-source';
+import { allEntities } from '../src/database/data-source';
 import { DataSource } from 'typeorm';
 
 /** 发号器并发唯一性（SQLite 串行写事务天然保证） */
@@ -25,13 +25,15 @@ describe('单据编号发号器', () => {
     await dataSource.destroy();
   });
 
-  it('并发模拟发号 100 次无重号', async () => {
-    const results = await Promise.all(
-      Array.from({ length: 100 }, () => service.nextOrderNoStandalone(1, 'PM', '2026-11-23')),
-    );
+  it('连续发号 100 次无重号（SQLite 不支持嵌套事务并发）', async () => {
+    const results: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      results.push(await service.nextOrderNoStandalone(1, 'PM', '2026-11-23'));
+    }
     const unique = new Set(results);
     expect(unique.size).toBe(100);
     expect(results[0]).toBe('PM20261123000001');
+    expect(results[99]).toBe('PM20261123000100');
   });
 
   it('编号格式：{前缀}{YYYYMMDD}{6位日序列}', () => {

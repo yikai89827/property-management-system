@@ -9,6 +9,8 @@ import { Audit } from '../../common/interceptors/audit.decorator';
 import { ChargingService } from './charging.service';
 
 class DeliveryChargeDto {
+  @IsString()
+  @MinLength(1)
   projectId!: string;
 
   @IsString()
@@ -41,6 +43,8 @@ class PropertyChargeDto extends DeliveryChargeDto {
 }
 
 class OtherChargeDto {
+  @IsString()
+  @MinLength(1)
   projectId!: string;
 
   @IsString()

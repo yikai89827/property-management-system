@@ -31,19 +31,25 @@ export class UserService {
     const roles = await this.userRoleRepo.find({ where: { companyId } });
     const roleEntities = await this.roleRepo.find({ where: { companyId } });
     const roleMap = new Map(roleEntities.map((r) => [r.id, { code: r.code, name: r.name }]));
+    const roleCodeById = new Map(roleEntities.map((r) => [r.id, r.code]));
     const scopes = await this.scopeRepo.find({ where: { companyId } });
-    return users.map((u) => ({
-      id: u.id,
-      username: u.username,
-      realName: u.realName,
-      status: u.status,
-      allProjectsScope: u.allProjectsScope,
-      projectScopes: scopes.filter((s) => s.userId === u.id).map((s) => s.projectId),
-      roles: roles
-        .filter((r) => r.userId === u.id)
-        .map((r) => roleMap.get(r.roleId))
-        .filter(Boolean),
-    }));
+    return users.map((u) => {
+      const userRoles = roles.filter((r) => r.userId === u.id);
+      const roleInfos = userRoles.map((r) => roleMap.get(r.roleId)).filter(Boolean);
+      const isCompanyAdmin = userRoles.some((r) => roleCodeById.get(r.roleId) === BuiltInRoles.COMPANY_ADMIN);
+      return {
+        id: u.id,
+        username: u.username,
+        realName: u.realName,
+        status: u.status,
+        lastLoginAt: u.lastLoginAt ?? null,
+        allProjectsScope: u.allProjectsScope,
+        projectScopes: scopes.filter((s) => s.userId === u.id).map((s) => s.projectId),
+        roles: roleInfos,
+        /** 从未登录且非公司管理员：允许物理删除 */
+        canDelete: !u.lastLoginAt && !isCompanyAdmin,
+      };
+    });
   }
 
   /** 建账号（配角色） */
@@ -102,6 +108,30 @@ export class UserService {
       await this.replaceRoles(companyId, userId, patch.roleCodes);
     }
     return user;
+  }
+
+  /** 删除从未登录过的账号（已使用过的只能停用） */
+  async deleteUser(companyId: number, userId: number, operatorId: number) {
+    if (userId === operatorId) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '不能删除当前登录账号');
+    }
+    const user = await this.userRepo.findOne({ where: { id: userId, companyId } });
+    if (!user) throw new BadRequestException('用户不存在');
+    if (user.lastLoginAt) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '该账号已登录使用过，不可删除，请停用');
+    }
+    const userRoles = await this.userRoleRepo.find({ where: { companyId, userId } });
+    if (userRoles.length > 0) {
+      const roleEntities = await this.roleRepo.find({ where: { companyId, id: In(userRoles.map((r) => r.roleId)) } });
+      if (roleEntities.some((r) => r.code === BuiltInRoles.COMPANY_ADMIN)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '公司管理员账号不可删除');
+      }
+    }
+    await this.overrideRepo.delete({ companyId, userId });
+    await this.scopeRepo.delete({ companyId, userId });
+    await this.userRoleRepo.delete({ companyId, userId });
+    await this.userRepo.remove(user);
+    return { ok: true };
   }
 
   private async replaceRoles(companyId: number, userId: number, roleCodes: string[]) {

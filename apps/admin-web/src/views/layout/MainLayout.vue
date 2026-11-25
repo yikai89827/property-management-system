@@ -32,9 +32,8 @@
           <el-select
             v-if="projectStore.options.length"
             :model-value="projectStore.currentProjectId"
-            placeholder="切换物业项目"
+            placeholder="切换物业项目（全站统一）"
             filterable
-            clearable
             class="project-switcher"
             @change="onProjectChange"
           >
@@ -87,9 +86,8 @@ function handleLogout() {
 }
 
 onMounted(() => {
-  if (auth.hasPermission('project:view')) {
-    void projectStore.loadOptions();
-  }
+  // 全站业务页依赖顶部当前项目，登录后一律加载可选项目
+  void projectStore.loadOptions();
 });
 </script>
 

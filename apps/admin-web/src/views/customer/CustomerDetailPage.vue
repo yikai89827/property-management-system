@@ -17,20 +17,32 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="姓名">{{ detail.name }}</el-descriptions-item>
             <el-descriptions-item label="住户类型">{{ residentLabels[detail.residentType] ?? detail.residentType }}</el-descriptions-item>
+            <el-descriptions-item label="房屋性质">
+              <el-select
+                :model-value="detail.propertyType || PropertyType.RESIDENTIAL"
+                size="small"
+                style="width: 120px"
+                @change="(v: string) => updatePropertyType(v)"
+              >
+                <el-option :value="PropertyType.RESIDENTIAL" :label="propertyLabels[PropertyType.RESIDENTIAL]" />
+                <el-option :value="PropertyType.COMMERCIAL_L1" :label="propertyLabels[PropertyType.COMMERCIAL_L1]" />
+                <el-option :value="PropertyType.COMMERCIAL_L2" :label="propertyLabels[PropertyType.COMMERCIAL_L2]" />
+              </el-select>
+            </el-descriptions-item>
             <el-descriptions-item label="所属项目">{{ detail.projectName || detail.projectId }}</el-descriptions-item>
             <el-descriptions-item label="房号">{{ detail.roomNo }}</el-descriptions-item>
             <el-descriptions-item label="电话">{{ detail.phoneMasked }}</el-descriptions-item>
-            <el-descriptions-item label="身份证号">{{ detail.idCardMasked }}</el-descriptions-item>
+            <el-descriptions-item label="身份证号">{{ detail.idCardMasked || '—' }}</el-descriptions-item>
             <el-descriptions-item label="房屋面积">{{ (detail.houseAreaFen / 100).toFixed(2) }} ㎡</el-descriptions-item>
             <el-descriptions-item label="房屋状态">{{ statusLabels[detail.houseStatus] ?? detail.houseStatus }}</el-descriptions-item>
             <el-descriptions-item label="物业费起始">{{ detail.feeStartDate }}</el-descriptions-item>
             <el-descriptions-item label="装修时间">{{ detail.decorateDate ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="交房时间">{{ detail.deliveryDate?.slice(0, 10) ?? '未交房' }}</el-descriptions-item>
+            <el-descriptions-item label="交房时间">{{ detail.deliveryDate ? formatDateTime(detail.deliveryDate) : '未交房' }}</el-descriptions-item>
             <el-descriptions-item label="合同签约">{{ detail.contractDate ?? '—' }}</el-descriptions-item>
           </el-descriptions>
 
           <template v-if="detail.relatedProperties?.length">
-            <el-divider>同一身份证下的其他房源（跨项目）</el-divider>
+            <el-divider>同一手机号下的其他房源（跨项目）</el-divider>
             <el-table :data="detail.relatedProperties" size="small" border>
               <el-table-column prop="projectName" label="项目" />
               <el-table-column prop="roomNo" label="房号" width="100" />
@@ -46,15 +58,71 @@
           </template>
 
           <el-divider>车牌登记</el-divider>
-          <el-tag v-for="p in detail.plates" :key="p" style="margin-right: 8px">{{ p }}</el-tag>
-          <el-input v-model="newPlate" placeholder="新车牌号" style="width: 160px; margin-right: 8px" />
-          <el-button type="primary" size="small" @click="addPlate">登记车牌</el-button>
+          <div class="plate-tags">
+            <el-tag v-for="p in detail.plates" :key="p" style="margin-right: 8px; margin-bottom: 6px">{{ p }}</el-tag>
+            <span v-if="!detail.plates?.length" class="plate-empty">暂无车牌</span>
+          </div>
+          <div class="plate-form">
+            <el-radio-group v-model="plateForm.kind" size="small">
+              <el-radio-button value="fuel">油车</el-radio-button>
+              <el-radio-button value="nev">新能源</el-radio-button>
+            </el-radio-group>
+            <el-select
+              v-model="plateForm.province"
+              filterable
+              placeholder="省"
+              style="width: 88px"
+              size="small"
+            >
+              <el-option v-for="p in plateProvinces" :key="p" :label="p" :value="p" />
+            </el-select>
+            <el-select
+              v-model="plateForm.letter"
+              filterable
+              placeholder="字母"
+              style="width: 78px"
+              size="small"
+            >
+              <el-option v-for="l in plateLetters" :key="l" :label="l" :value="l" />
+            </el-select>
+            <el-input
+              v-model="plateForm.suffix"
+              :placeholder="plateForm.kind === 'nev' ? '后 6 位（字母数字）' : '后 5 位（字母数字）'"
+              :maxlength="plateForm.kind === 'nev' ? 6 : 5"
+              style="width: 160px"
+              size="small"
+              @input="onPlateSuffixInput"
+              @keyup.enter="addPlate"
+            />
+            <el-button type="primary" size="small" @click="addPlate">登记车牌</el-button>
+            <span v-if="composedPlate" class="plate-preview">预览 {{ composedPlate }}</span>
+          </div>
 
           <el-divider>房屋状态流转</el-divider>
-          <el-select v-model="targetStatus" placeholder="目标状态" style="width: 140px; margin-right: 8px">
-            <el-option v-for="(label, v) in statusLabels" :key="v" :label="label" :value="v" />
+          <p v-if="detail.houseStatus === 'UNDELIVERED'" class="status-tip">
+            未交房仅能通过「交房缴费」变为已交房；转售不会改变交房状态。
+          </p>
+          <el-select
+            v-else
+            v-model="targetStatus"
+            placeholder="目标状态"
+            style="width: 140px; margin-right: 8px"
+          >
+            <el-option
+              v-for="s in allowedNextStatuses"
+              :key="s"
+              :label="statusLabels[s] ?? s"
+              :value="s"
+            />
           </el-select>
-          <el-button type="primary" size="small" @click="transitionStatus">变更状态</el-button>
+          <el-button
+            v-if="detail.houseStatus !== 'UNDELIVERED'"
+            type="primary"
+            size="small"
+            @click="transitionStatus"
+          >
+            变更状态
+          </el-button>
         </el-card>
 
         <el-card style="margin-top: 16px">
@@ -90,7 +158,9 @@
           <el-table :data="detail.decorateFilings ?? []" size="small" border>
             <el-table-column prop="startDate" label="开始" width="110" />
             <el-table-column prop="endDate" label="结束" width="110" />
-            <el-table-column prop="status" label="状态" width="90" />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">{{ decorateStatusLabel(row.status) }}</template>
+            </el-table-column>
             <el-table-column prop="remark" label="备注" />
             <el-table-column label="操作" width="100">
               <template #default="{ row }">
@@ -107,6 +177,10 @@
           <el-descriptions :column="2" border v-if="feeStatus">
             <el-descriptions-item label="计费起始月">{{ feeStatus.feeStartMonth }}</el-descriptions-item>
             <el-descriptions-item label="计费截止月">{{ feeStatus.feeEndMonth }}</el-descriptions-item>
+            <el-descriptions-item label="适用单价">
+              {{ ((feeStatus.unitPrice ?? 0) / 100).toFixed(2) }} 元/㎡/月
+              （{{ propertyLabels[feeStatus.propertyType] ?? '住房' }}）
+            </el-descriptions-item>
             <el-descriptions-item label="累计计费月数">{{ feeStatus.totalBillableMonths }}</el-descriptions-item>
             <el-descriptions-item label="累计已缴费月数">{{ feeStatus.paidMonths }}</el-descriptions-item>
             <el-descriptions-item label="累计欠费月份">
@@ -129,9 +203,9 @@
             <el-timeline-item
               v-for="h in detail.ownershipHistory"
               :key="h.id"
-              :timestamp="h.transferredAt?.slice(0, 19).replace('T', ' ')"
+              :timestamp="formatDateTime(h.transferredAt)"
             >
-              {{ h.fromName }}（{{ h.fromIdCardMasked }}）→ {{ h.toName }}（{{ h.toIdCardMasked }}）
+              {{ h.fromName }}（{{ h.fromIdCardMasked || '无证件' }}）→ {{ h.toName }}（{{ h.toIdCardMasked || '无证件' }}）
               <span v-if="h.remark">；{{ h.remark }}</span>
             </el-timeline-item>
           </el-timeline>
@@ -141,8 +215,12 @@
         <el-card style="margin-top: 16px">
           <template #header>5. 变更历史</template>
           <el-timeline>
-            <el-timeline-item v-for="log in changeLogs" :key="log.id" :timestamp="log.changedAt?.slice(0, 19).replace('T', ' ')">
-              {{ log.fieldName }}：{{ log.oldValue }} → {{ log.newValue }}
+            <el-timeline-item
+              v-for="log in changeLogs"
+              :key="log.id"
+              :timestamp="formatDateTime(log.changedAt)"
+            >
+              {{ fieldLabel(log.fieldName) }}：{{ formatLogValue(log.oldValue) }} → {{ formatLogValue(log.newValue) }}
             </el-timeline-item>
           </el-timeline>
           <el-empty v-if="changeLogs.length === 0" description="暂无变更记录" :image-size="48" />
@@ -159,8 +237,8 @@
         <el-form-item label="电话" required>
           <el-input v-model="resaleForm.phone" />
         </el-form-item>
-        <el-form-item label="身份证号" required>
-          <el-input v-model="resaleForm.idCard" maxlength="18" />
+        <el-form-item label="身份证号">
+          <el-input v-model="resaleForm.idCard" maxlength="18" placeholder="可选" />
         </el-form-item>
         <el-form-item label="住户类型">
           <el-radio-group v-model="resaleForm.residentType">
@@ -186,18 +264,63 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { HOUSE_STATUS_LABELS, RESIDENT_TYPE_LABELS, ResidentType } from '@pms/shared';
+import {
+  HOUSE_STATUS_LABELS,
+  HouseStatusTransitionMatrix,
+  PROPERTY_TYPE_LABELS,
+  PropertyType,
+  RESIDENT_TYPE_LABELS,
+  ResidentType,
+  type HouseStatus,
+} from '@pms/shared';
 import { http } from '@/api/request';
+import { decorateStatusLabel, fieldLabel, formatDateTime } from '@/utils/format';
 
 const route = useRoute();
 const customerId = computed(() => Number(route.params.id));
 const detail = ref<Record<string, any> | null>(null);
 const feeStatus = ref<Record<string, any> | null>(null);
 const changeLogs = ref<Record<string, any>[]>([]);
-const newPlate = ref('');
 const targetStatus = ref('');
 const statusLabels = HOUSE_STATUS_LABELS;
 const residentLabels = RESIDENT_TYPE_LABELS;
+const propertyLabels = PROPERTY_TYPE_LABELS;
+const allowedNextStatuses = computed(() => {
+  const cur = detail.value?.houseStatus as HouseStatus | undefined;
+  if (!cur) return [] as HouseStatus[];
+  return (HouseStatusTransitionMatrix[cur] ?? []).filter((s) => s !== ('UNDELIVERED' as HouseStatus));
+});
+
+const plateProvinces = [
+  '京', '津', '沪', '渝', '冀', '豫', '云', '辽', '黑', '湘', '皖', '鲁', '新', '苏', '浙', '赣',
+  '鄂', '桂', '甘', '晋', '蒙', '陕', '吉', '闽', '贵', '粤', '青', '藏', '川', '宁', '琼',
+];
+const plateLetters = 'ABCDEFGHJKLMNPQRSTUVWXYZ'.split('');
+const plateForm = reactive({
+  kind: 'fuel' as 'fuel' | 'nev',
+  province: '湘',
+  letter: 'A',
+  suffix: '',
+});
+const composedPlate = computed(() => {
+  const suffix = plateForm.suffix.trim().toUpperCase();
+  if (!plateForm.province || !plateForm.letter || !suffix) return '';
+  return `${plateForm.province}${plateForm.letter}${suffix}`;
+});
+
+function onPlateSuffixInput(val: string) {
+  plateForm.suffix = String(val ?? '')
+    .toUpperCase()
+    .replace(/[^A-HJ-NP-Z0-9挂学警港澳]/g, '');
+}
+
+function isValidPlateNoLocal(plate: string, kind: 'fuel' | 'nev'): boolean {
+  if (kind === 'fuel') {
+    return /^[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-HJ-NP-Z][A-HJ-NP-Z0-9]{4}[A-HJ-NP-Z0-9挂学警港澳]$/.test(plate);
+  }
+  // 新能源：8 位，第二位字母后共 6 位
+  return /^[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-HJ-NP-Z][A-HJ-NP-Z0-9]{5}[A-HJ-NP-Z0-9]$/.test(plate);
+}
 const resaleVisible = ref(false);
 const filingForm = reactive({ startDate: '', endDate: '', remark: '' });
 const resaleForm = reactive({
@@ -241,18 +364,39 @@ async function unlockProfile() {
 }
 
 async function submitResale() {
-  if (!resaleForm.name || !resaleForm.phone || !resaleForm.idCard) {
-    ElMessage.warning('请填写新业主姓名/电话/身份证');
+  if (!resaleForm.name || !resaleForm.phone) {
+    ElMessage.warning('请填写新业主姓名与手机号');
+    return;
+  }
+  if (!/^1[3-9]\d{9}$/.test(resaleForm.phone)) {
+    ElMessage.warning('手机号格式不正确');
     return;
   }
   try {
     await http.post(`/customers/${customerId.value}/resale`, {
       ...resaleForm,
+      idCard: resaleForm.idCard.trim() || undefined,
       contractDate: resaleForm.contractDate || undefined,
       remark: resaleForm.remark || undefined,
     });
     ElMessage.success('转售完成，缴费台账已保留在本房源');
     resaleVisible.value = false;
+    await load();
+  } catch {
+    /* interceptor */
+  }
+}
+
+async function updatePropertyType(propertyType: string) {
+  try {
+    await http.patch(`/customers/${customerId.value}`, { propertyType });
+    const tip =
+      propertyType === PropertyType.COMMERCIAL_L2
+        ? '已设为门面二楼（物业费面积×0.7）'
+        : propertyType === PropertyType.COMMERCIAL_L1 || propertyType === PropertyType.COMMERCIAL
+          ? '已设为门面一楼（物业费面积×2）'
+          : '已设为住房';
+    ElMessage.success(tip);
     await load();
   } catch {
     /* interceptor */
@@ -291,11 +435,24 @@ async function closeFiling(filingId: number) {
 }
 
 async function addPlate() {
-  if (!newPlate.value) return;
+  const plateNo = composedPlate.value;
+  if (!plateNo) {
+    ElMessage.warning('请完整填写车牌号');
+    return;
+  }
+  const needLen = plateForm.kind === 'nev' ? 6 : 5;
+  if (plateForm.suffix.trim().length !== needLen) {
+    ElMessage.warning(plateForm.kind === 'nev' ? '新能源车牌后半段须为 6 位' : '油车牌后半段须为 5 位');
+    return;
+  }
+  if (!isValidPlateNoLocal(plateNo, plateForm.kind)) {
+    ElMessage.warning('车牌号格式不正确，请核对');
+    return;
+  }
   try {
-    await http.post(`/customers/${customerId.value}/plates`, { plateNo: newPlate.value });
-    ElMessage.success('车牌登记成功');
-    newPlate.value = '';
+    await http.post(`/customers/${customerId.value}/plates`, { plateNo });
+    ElMessage.success(`车牌 ${plateNo} 登记成功`);
+    plateForm.suffix = '';
     await load();
   } catch {
     /* interceptor */
@@ -313,10 +470,39 @@ async function transitionStatus() {
   }
 }
 
+function formatLogValue(v: unknown): string {
+  if (v == null || v === '') return '—';
+  const s = String(v);
+  if (s === 'true' || s === 'false') return s === 'true' ? '是' : '否';
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return formatDateTime(s);
+  if (statusLabels[s as keyof typeof statusLabels]) return statusLabels[s as keyof typeof statusLabels];
+  if (residentLabels[s as keyof typeof residentLabels]) return residentLabels[s as keyof typeof residentLabels];
+  if (propertyLabels[s as keyof typeof propertyLabels]) return propertyLabels[s as keyof typeof propertyLabels];
+  return s;
+}
+
 onMounted(load);
 </script>
 
 <style scoped>
 .toolbar { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .amount { color: #f56c6c; font-weight: bold; }
+.plate-tags { min-height: 28px; margin-bottom: 8px; }
+.plate-empty { color: var(--el-text-color-secondary); font-size: 13px; }
+.plate-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.plate-preview {
+  font-size: 13px;
+  color: var(--el-color-primary);
+  letter-spacing: 0.5px;
+}
+.status-tip {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
 </style>

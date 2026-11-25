@@ -37,7 +37,7 @@
       <div class="strong">实收金额：{{ (order.receivedAmount / 100).toFixed(2) }} 元</div>
       <div>收款方式：{{ payer.paymentMethodName ?? payer.paymentMethodCode }}</div>
       <div>收 款 人：{{ payer.payee ?? order.payeeName }}</div>
-      <div>收款日期：{{ order.paidAt?.slice(0, 19).replace('T', ' ') ?? '—' }}</div>
+      <div>收款日期：{{ formatDateTime(order.paidAt) }}</div>
     </div>
     <p class="remark">{{ order.remark }}</p>
     <div class="actions no-print">
@@ -50,6 +50,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { DISCOUNT_TYPE_LABELS, FEE_ITEM_LABELS } from '@pms/shared';
+import { formatDateTime } from '@/utils/format';
 
 const props = defineProps<{
   order: {

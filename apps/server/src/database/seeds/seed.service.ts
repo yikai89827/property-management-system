@@ -80,10 +80,15 @@ export class SeedService implements OnModuleInit {
       {
         code: BuiltInRoles.FINANCE,
         name: '财务',
+        // 默认可见：首页/项目/客户/三类缴费/收款单/收款确认/统计；不含权限管理、系统配置
         permissions: [
           'project:view',
           'customer:view',
+          'charge:delivery:execute',
+          'charge:property:execute',
+          'charge:other:execute',
           'charge:receipt:view',
+          'payment:record:confirm',
           'statistic:monthly:view',
           'statistic:yearly:view',
           'statistic:category:view',
@@ -208,12 +213,17 @@ export class SeedService implements OnModuleInit {
       }
     }
 
-    // 7. 四项费用参数默认值（公司级，整数分口径）
+    // 7. 费用参数默认值（公司级，整数分口径）
+    // 住房装修：面积×90×0.02=1.8；门面装修：面积×0.01×90=0.9
+    // 住房物业费默认 1.2；门面一楼×2=2.0；门面二楼×0.7=0.7；垃圾×2.5
     const paramDefaults: { code: FeeParameterCode; value: number }[] = [
       { code: FeeParameterCode.DEPOSIT_DECORATION_AMOUNT, value: 200000 },
-      { code: FeeParameterCode.DECORATION_MGMT_RATE, value: 90 },
+      { code: FeeParameterCode.DECORATION_MGMT_RATE, value: 180 },
+      { code: FeeParameterCode.DECORATION_MGMT_RATE_COMMERCIAL, value: 90 },
       { code: FeeParameterCode.GARBAGE_TRANSPORT_RATE, value: 250 },
       { code: FeeParameterCode.PROPERTY_FEE_UNIT_PRICE, value: 120 },
+      { code: FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL, value: 200 },
+      { code: FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2, value: 70 },
     ];
     for (const param of paramDefaults) {
       const exists = await this.feeParameterRepo.findOne({
@@ -231,6 +241,23 @@ export class SeedService implements OnModuleInit {
           }),
         );
         this.logger.log(`seed fee parameter ${FEE_PARAMETER_LABELS[param.code]} = ${param.value}`);
+      } else if (
+        param.code === FeeParameterCode.DECORATION_MGMT_RATE &&
+        exists.value === 90 &&
+        !exists.projectId
+      ) {
+        // 历史默认 0.9 元/㎡ → 纠正为面积×90×0.02=1.8 元/㎡（仅公司默认且仍为旧值时）
+        await this.feeParameterRepo.save(
+          this.feeParameterRepo.create({
+            companyId: company.id,
+            projectId: undefined,
+            itemCode: param.code,
+            value: 180,
+            effectiveAt: new Date().toISOString(),
+            operatorId: undefined,
+          }),
+        );
+        this.logger.log('upgrade decoration mgmt rate 90 → 180 (面积×90×0.02)');
       }
     }
 

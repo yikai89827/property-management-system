@@ -19,7 +19,7 @@ import { FeeCalculationService } from '../fee-calculation/fee-calculation.servic
 import { SequenceService } from '../charging/sequence.service';
 import { AuthService } from '../auth/auth.service';
 import { RECEIPT_FIXED_REMARK } from '@pms/shared';
-import { isValidIdCard } from '../../common/crypto/crypto.service';
+import { isValidIdCard, isValidPhone } from '../../common/crypto/crypto.service';
 
 const MAX_FAIL_COUNT = 5;
 const LOCK_MINUTES = 30;
@@ -46,13 +46,41 @@ export class OwnerService {
     @InjectRepository(VehiclePlateEntity) private readonly plateRepo: Repository<VehiclePlateEntity>,
   ) {}
 
+  /** 公开：扫码落地页展示小区名称（仅返回 id/名称/地址） */
+  async projectBrief(projectId: number) {
+    const project = await this.projectRepo.findOne({ where: { id: projectId } });
+    if (!project || project.status !== 'active') {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在或已停用');
+    }
+    return {
+      id: project.id,
+      name: project.name,
+      address: project.address ?? '',
+    };
+  }
+
+  /** 公开：可选小区列表（一人多小区时可改，不必反复扫码） */
+  async listProjectBriefs() {
+    const projects = await this.projectRepo.find({
+      where: { status: 'active' },
+      order: { id: 'ASC' },
+    });
+    return projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      address: p.address ?? '',
+    }));
+  }
+
   /**
-   * 业主/租户身份匹配（身份证为唯一标识）：
-   * - 优先：projectId + idCard（+ 可选 roomNo，一人多房时消歧）
+   * 业主/租户身份匹配（手机号为主识别，身份证可选）：
+   * - 优先：projectId + phone（+ 可选 name/roomNo，一人多房时消歧）
+   * - 次选：projectId + idCard（有身份证时）
    * - 兼容：projectId + roomId + name + phoneLast4
    */
   async verify(input: {
     projectId: number;
+    phone?: string;
     idCard?: string;
     roomId?: string;
     name?: string;
@@ -62,7 +90,12 @@ export class OwnerService {
     const project = await this.projectRepo.findOne({ where: { id: input.projectId } });
     if (!project) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在');
     const companyId = project.companyId;
-    const attemptKey = (input.idCard?.trim().toUpperCase() || input.roomId || 'unknown').slice(0, 64);
+    const attemptKey = (
+      input.phone?.trim() ||
+      input.idCard?.trim().toUpperCase() ||
+      input.roomId ||
+      'unknown'
+    ).slice(0, 64);
     const today = new Date().toISOString().slice(0, 10);
     let attempt = await this.attemptRepo.findOne({
       where: { companyId, projectId: input.projectId, roomNo: attemptKey, attemptDate: today },
@@ -93,28 +126,46 @@ export class OwnerService {
 
     let matched: CustomerEntity | undefined;
 
-    if (input.idCard) {
-      const idCard = input.idCard.trim().toUpperCase();
-      if (!isValidIdCard(idCard)) throw new BusinessException(ErrorCodes.ID_CARD_INVALID);
-      const blind = this.crypto.blindIndex(idCard);
-      const person = await this.personRepo.findOne({ where: { companyId, idCardBlindIndex: blind } });
-      if (!person) await fail();
-      const units = (
-        await this.customerRepo.find({ where: { companyId, projectId: input.projectId, personId: person!.id } })
-      ).filter((c) => !c.deletedAt);
-
+    const pickFromUnits = async (units: CustomerEntity[]) => {
       if (input.customerId) {
         matched = units.find((c) => c.id === input.customerId);
-      } else if (input.roomId) {
+        return null;
+      }
+      if (input.roomId) {
         matched = units.find((c) => c.roomNo === input.roomId);
-      } else if (units.length === 1) {
+        return null;
+      }
+      if (input.name) {
+        const byName = units.filter((c) => c.name === input.name);
+        if (byName.length === 1) {
+          matched = byName[0];
+          return null;
+        }
+        if (byName.length > 1) {
+          attempt.failCount = 0;
+          await this.attemptRepo.save(attempt);
+          return {
+            needSelectProperty: true as const,
+            properties: byName.map((c) => ({
+              customerId: c.id,
+              roomNo: c.roomNo,
+              residentType: c.residentType,
+              houseStatus: c.houseStatus,
+              projectId: c.projectId,
+              projectName: project.name,
+            })),
+          };
+        }
+      }
+      if (units.length === 1) {
         matched = units[0];
-      } else if (units.length > 1) {
-        // 同一项目下一人多房：返回候选列表，由前端二次选择
+        return null;
+      }
+      if (units.length > 1) {
         attempt.failCount = 0;
         await this.attemptRepo.save(attempt);
         return {
-          needSelectProperty: true,
+          needSelectProperty: true as const,
           properties: units.map((c) => ({
             customerId: c.id,
             roomNo: c.roomNo,
@@ -125,6 +176,41 @@ export class OwnerService {
           })),
         };
       }
+      return null;
+    };
+
+    if (input.phone) {
+      const phone = input.phone.trim();
+      if (!isValidPhone(phone)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '手机号格式不正确');
+      }
+      const blind = this.crypto.blindIndex(phone);
+      const person = await this.personRepo.findOne({ where: { companyId, phoneBlindIndex: blind } });
+      if (!person) await fail();
+      let units = (
+        await this.customerRepo.find({ where: { companyId, projectId: input.projectId, personId: person!.id } })
+      ).filter((c) => !c.deletedAt);
+      // 兼容尚未回填 person_id 的档案：按手机盲索引直查
+      if (!units.length) {
+        units = (
+          await this.customerRepo.find({
+            where: { companyId, projectId: input.projectId, phoneBlindIndex: blind },
+          })
+        ).filter((c) => !c.deletedAt);
+      }
+      const multi = await pickFromUnits(units);
+      if (multi) return multi;
+    } else if (input.idCard) {
+      const idCard = input.idCard.trim().toUpperCase();
+      if (!isValidIdCard(idCard)) throw new BusinessException(ErrorCodes.ID_CARD_INVALID);
+      const blind = this.crypto.blindIndex(idCard);
+      const person = await this.personRepo.findOne({ where: { companyId, idCardBlindIndex: blind } });
+      if (!person) await fail();
+      const units = (
+        await this.customerRepo.find({ where: { companyId, projectId: input.projectId, personId: person!.id } })
+      ).filter((c) => !c.deletedAt);
+      const multi = await pickFromUnits(units);
+      if (multi) return multi;
     } else if (input.roomId && input.name && input.phoneLast4) {
       const customers = await this.customerRepo.find({
         where: { companyId, projectId: input.projectId, roomNo: input.roomId },
@@ -135,7 +221,10 @@ export class OwnerService {
         return phone.endsWith(input.phoneLast4!);
       });
     } else {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '请使用身份证号验证，或填写房号/姓名/手机后四位');
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        '请填写手机号验证，或使用身份证号，或填写房号/姓名/手机后四位',
+      );
     }
 
     if (!matched) await fail();
@@ -185,7 +274,11 @@ export class OwnerService {
     const ledgers = await this.dataSource.getRepository(PropertyFeeLedgerEntity).find({
       where: { companyId, customerId },
     });
-    const ctx = await this.feeCalculationService.resolveParameters(companyId, customer.projectId);
+    const ctx = await this.feeCalculationService.resolveParameters(
+      companyId,
+      customer.projectId,
+      customer.propertyType,
+    );
     const feeEndMonth = new Date().toISOString().slice(0, 7);
     const totalBillableMonths = this.feeCalculationService.totalBillableMonths(customer.feeStartDate);
     const paidMonths = this.feeCalculationService.paidMonths(ledgers);
@@ -219,7 +312,11 @@ export class OwnerService {
       const customer = await manager.findOne(CustomerEntity, { where: { id: customerId, companyId } });
       if (!customer) throw new BusinessException(ErrorCodes.UNAUTHORIZED, undefined, 401);
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId } });
-      const ctx = await this.feeCalculationService.resolveParameters(companyId, customer.projectId);
+      const ctx = await this.feeCalculationService.resolveParameters(
+        companyId,
+        customer.projectId,
+        customer.propertyType,
+      );
 
       // 重复提交拦截：同月段 pending/effective 预占
       if (FeeCalculationService.hasOverlap(input.startMonth, input.months, ledgers)) {

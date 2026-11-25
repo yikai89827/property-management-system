@@ -113,8 +113,9 @@ export class PropertyFeeLedgerEntity {
   @Column({ name: 'customer_id' })
   customerId!: number;
 
-  @Column({ name: 'receipt_order_id' })
-  receiptOrderId!: number;
+  /** 期初导入可为 null（无对应收款单）；须显式 integer，否则 number|null 会被 reflect 成 Object */
+  @Column({ name: 'receipt_order_id', type: 'integer', nullable: true })
+  receiptOrderId?: number | null;
 
   /** YYYY-MM */
   @Column({ name: 'start_month' })

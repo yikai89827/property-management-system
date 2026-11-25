@@ -23,15 +23,20 @@ export class TenantMiddleware implements NestMiddleware {
     const header = req.headers.authorization;
     // 公开路径（登录/健康检查/文档）无令牌直接放行
     const url = req.originalUrl ?? req.url;
-    const publicPath = [
+    const publicPrefixes = [
       '/api/v1/auth/login',
       '/api/v1/auth/refresh',
       '/api/v1/auth/logout',
       '/api/v1/health',
       '/api/docs',
       '/api/v1/owner/auth/verify',
+      // 业主扫码页公开：小区列表 / 单项目简介（与 Controller @Public() 对齐）
+      '/api/v1/owner/projects',
     ];
-    const isPublic = publicPath.some((p) => url.startsWith(p));
+    const pathOnly = url.split('?')[0];
+    const isPublic = publicPrefixes.some(
+      (p) => pathOnly === p || pathOnly.startsWith(`${p}/`) || pathOnly.startsWith(p),
+    );
     if (!header?.startsWith('Bearer ')) {
       if (isPublic) {
         return next();

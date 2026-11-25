@@ -30,7 +30,7 @@ export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 
 export const ErrorMessages: Record<ErrorCode, string> = {
   'PMS-1001': '参数校验失败',
-  'PMS-1002': '未认证或令牌已失效',
+  'PMS-1002': '未登录或登录已失效',
   'PMS-1003': '无权限执行该操作',
   'PMS-2001': '项目名称已存在',
   'PMS-3001': '该房号不存在客户档案',

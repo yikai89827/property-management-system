@@ -2,18 +2,23 @@
   <el-card>
     <template #header>
       <div class="card-header">
-        <span>客户档案（身份证唯一身份 · 支持跨项目多房）</span>
-        <el-button v-if="auth.hasPermission('customer:create')" type="primary" @click="openCreate">新建客户</el-button>
+        <span>客户档案（手机号主识别 · 支持跨项目多房）</span>
+        <div class="header-actions">
+          <el-button v-if="auth.hasPermission('customer:create')" @click="downloadTemplate">下载导入模板</el-button>
+          <el-button v-if="auth.hasPermission('customer:create')" @click="openImport">Excel 一键导入</el-button>
+          <el-button v-if="auth.hasPermission('customer:create')" type="primary" @click="openCreate">新建客户</el-button>
+        </div>
       </div>
     </template>
     <el-form inline>
-      <el-form-item label="项目">
-        <el-select v-model="query.projectId" placeholder="全部项目" clearable style="width: 180px">
-          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-        </el-select>
+      <el-form-item label="当前项目">
+        <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
+      </el-form-item>
+      <el-form-item label="手机号">
+        <el-input v-model="query.phone" placeholder="主识别检索" style="width: 140px" maxlength="11" />
       </el-form-item>
       <el-form-item label="身份证号">
-        <el-input v-model="query.idCard" placeholder="唯一身份检索" style="width: 180px" maxlength="18" />
+        <el-input v-model="query.idCard" placeholder="可选" style="width: 160px" maxlength="18" />
       </el-form-item>
       <el-form-item label="房号">
         <el-input v-model="query.roomNo" placeholder="如 1-101" style="width: 120px" />
@@ -24,6 +29,11 @@
       <el-form-item label="身份">
         <el-select v-model="query.residentType" placeholder="全部" clearable style="width: 110px">
           <el-option v-for="(label, v) in residentLabels" :key="v" :label="label" :value="v" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="房屋性质">
+        <el-select v-model="query.propertyType" placeholder="全部" clearable style="width: 120px">
+          <el-option v-for="o in propertyOptions" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
       </el-form-item>
       <el-form-item>
@@ -37,8 +47,13 @@
       <el-table-column label="身份" width="80">
         <template #default="{ row }">{{ residentLabels[row.residentType] ?? row.residentType }}</template>
       </el-table-column>
+      <el-table-column label="房屋性质" width="80">
+        <template #default="{ row }">{{ propertyLabels[row.propertyType] ?? '住房' }}</template>
+      </el-table-column>
       <el-table-column prop="roomNo" label="房号" width="100" />
-      <el-table-column prop="idCardMasked" label="身份证号" min-width="160" />
+      <el-table-column prop="idCardMasked" label="身份证号" min-width="140">
+        <template #default="{ row }">{{ row.idCardMasked || '—' }}</template>
+      </el-table-column>
       <el-table-column label="面积（㎡）" width="100">
         <template #default="{ row }">{{ (row.houseAreaFen / 100).toFixed(2) }}</template>
       </el-table-column>
@@ -60,29 +75,68 @@
       style="margin-top: 12px"
     />
 
+    <el-dialog v-model="importVisible" title="Excel 一键导入客户（期初数据）" width="640">
+      <p class="import-tip">
+        请先下载模板，按列填写后上传。支持导入物业费起始日期与「已缴月数」作为期初台账（例如系统 2017-01 启用，可填起始日与已缴月数）。
+        未填项目编号时，使用下方默认项目。
+      </p>
+      <el-form label-width="120px">
+        <el-form-item label="默认项目">
+          <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
+          <span class="import-project-hint">（随顶部当前项目）</span>
+        </el-form-item>
+        <el-form-item label="导入后确认">
+          <el-checkbox v-model="importConfirmProfile">导入成功后自动确认档案</el-checkbox>
+        </el-form-item>
+        <el-form-item label="选择文件">
+          <input ref="fileInput" type="file" accept=".xlsx,.xls" @change="onImportFile" />
+        </el-form-item>
+      </el-form>
+      <div v-if="importResult" class="import-result">
+        <p>
+          成功 <b>{{ importResult.successCount }}</b> 户，失败
+          <b>{{ importResult.failedCount }}</b> 户（共 {{ importResult.total }} 行）
+        </p>
+        <el-table v-if="importResult.failed?.length" :data="importResult.failed" size="small" border max-height="240">
+          <el-table-column prop="row" label="行号" width="70" />
+          <el-table-column prop="roomNo" label="房号" width="100" />
+          <el-table-column prop="reason" label="失败原因" min-width="200" show-overflow-tooltip />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!importRows.length" @click="submitImport">
+          开始导入（{{ importRows.length }} 行）
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="dialogVisible" title="新建客户档案" width="640">
       <el-form :model="form" label-width="140px">
-        <el-form-item label="所属项目" required>
-          <el-select v-model="form.projectId" style="width: 100%">
-            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
+        <el-form-item label="所属项目">
+          <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
         </el-form-item>
         <el-form-item label="住户类型" required>
           <el-radio-group v-model="form.residentType">
             <el-radio v-for="(label, v) in residentLabels" :key="v" :value="v">{{ label }}</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="身份证号" required>
-          <el-input v-model="form.idCard" maxlength="18" placeholder="公司内唯一身份标识" @blur="checkIdCard" />
+        <el-form-item label="房屋性质" required>
+          <el-radio-group v-model="form.propertyType">
+            <el-radio v-for="o in propertyOptions" :key="o.value" :value="o.value">{{ o.label }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="手机号" required>
+          <el-input v-model="form.phone" placeholder="主识别标识（国内手机号）" maxlength="11" />
         </el-form-item>
         <el-form-item label="姓名" required>
           <el-input v-model="form.name" />
         </el-form-item>
-        <el-form-item label="电话" required>
-          <el-input v-model="form.phone" placeholder="国内手机号" />
-        </el-form-item>
         <el-form-item label="房号" required>
-          <el-input v-model="form.roomNo" placeholder="同项目唯一；同一身份证可跨项目多房" />
+          <el-input v-model="form.roomNo" placeholder="同项目唯一；同一手机号可跨项目多房" />
+        </el-form-item>
+        <el-form-item label="身份证号">
+          <el-input v-model="form.idCard" maxlength="18" placeholder="可选；有则填写" @blur="checkIdCard" />
         </el-form-item>
         <el-form-item label="房屋面积（㎡）" required>
           <el-input-number v-model="form.houseArea" :min="0.01" :precision="2" />
@@ -98,7 +152,13 @@
         </el-form-item>
         <el-form-item label="房屋状态" required>
           <el-select v-model="form.houseStatus" style="width: 200px">
-            <el-option v-for="(label, v) in statusLabels" :key="v" :label="label" :value="v" />
+            <!-- 已交房只能通过交房缴费达成，建档不可直接选 -->
+            <el-option
+              v-for="(label, v) in createStatusOptions"
+              :key="v"
+              :label="label"
+              :value="v"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="建档后">
@@ -114,34 +174,86 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { HOUSE_STATUS_LABELS, HouseStatus, RESIDENT_TYPE_LABELS, ResidentType } from '@pms/shared';
+import * as XLSX from 'xlsx';
+import {
+  HOUSE_STATUS_LABELS,
+  HouseStatus,
+  PROPERTY_TYPE_LABELS,
+  PropertyType,
+  RESIDENT_TYPE_LABELS,
+  ResidentType,
+} from '@pms/shared';
 import { http } from '@/api/request';
 import { useAuthStore } from '@/stores/auth';
-import { useProjectStore } from '@/stores/project';
+import { useCurrentProject } from '@/composables/useCurrentProject';
 
 const auth = useAuthStore();
-const projectStore = useProjectStore();
+const { projectStore, currentProjectId, projectName, requireProjectId } = useCurrentProject({
+  onChange: () => {
+    page.value = 1;
+    void load();
+  },
+});
 const statusLabels = HOUSE_STATUS_LABELS;
+/** 新建档案可选状态：不含「已交房」（须走交房缴费） */
+const createStatusOptions = Object.fromEntries(
+  Object.entries(HOUSE_STATUS_LABELS).filter(([k]) => k !== HouseStatus.DELIVERED),
+) as Record<string, string>;
 const residentLabels = RESIDENT_TYPE_LABELS;
+const propertyLabels = PROPERTY_TYPE_LABELS;
+/** 建档/筛选可选：住房、门面一楼、门面二楼（不含旧 COMMERCIAL 别名） */
+const propertyOptions = [
+  { value: PropertyType.RESIDENTIAL, label: PROPERTY_TYPE_LABELS[PropertyType.RESIDENTIAL] },
+  { value: PropertyType.COMMERCIAL_L1, label: PROPERTY_TYPE_LABELS[PropertyType.COMMERCIAL_L1] },
+  { value: PropertyType.COMMERCIAL_L2, label: PROPERTY_TYPE_LABELS[PropertyType.COMMERCIAL_L2] },
+];
 const list = ref<Record<string, unknown>[]>([]);
 const total = ref(0);
 const page = ref(1);
 const pageSize = 20;
 const loading = ref(false);
-const projects = ref<{ id: number; name: string }[]>([]);
 const query = reactive({
-  projectId: undefined as number | undefined,
   roomNo: '',
   name: '',
+  phone: '',
   idCard: '',
   residentType: undefined as string | undefined,
+  propertyType: undefined as string | undefined,
 });
 const dialogVisible = ref(false);
+const importVisible = ref(false);
+const importConfirmProfile = ref(true);
+const importRows = ref<Record<string, unknown>[]>([]);
+const importing = ref(false);
+const importResult = ref<{
+  total: number;
+  successCount: number;
+  failedCount: number;
+  failed: { row: number; roomNo?: string; reason: string }[];
+} | null>(null);
+const fileInput = ref<HTMLInputElement>();
+
+const TEMPLATE_HEADERS = [
+  '项目编号',
+  '项目名称',
+  '房号',
+  '姓名',
+  '手机号',
+  '身份证号',
+  '房屋性质',
+  '房屋面积',
+  '物业费起始日期',
+  '已缴月数',
+  '房屋状态',
+  '住户类型',
+  '合同日期',
+  '装修日期',
+];
 const form = reactive({
-  projectId: undefined as number | undefined,
   residentType: ResidentType.OWNER as string,
+  propertyType: PropertyType.RESIDENTIAL as string,
   name: '',
   phone: '',
   roomNo: '',
@@ -158,7 +270,12 @@ async function load() {
   loading.value = true;
   try {
     const data = await http.get<never, { list: Record<string, unknown>[]; total: number }>('/customers', {
-      params: { ...query, page: page.value, pageSize },
+      params: {
+        ...query,
+        projectId: currentProjectId.value ?? undefined,
+        page: page.value,
+        pageSize,
+      },
     });
     list.value = data.list;
     total.value = data.total;
@@ -168,9 +285,10 @@ async function load() {
 }
 
 function openCreate() {
+  if (!requireProjectId()) return;
   Object.assign(form, {
-    projectId: query.projectId ?? projectStore.currentProjectId ?? projects.value[0]?.id,
     residentType: ResidentType.OWNER,
+    propertyType: PropertyType.RESIDENTIAL,
     name: '', phone: '', roomNo: '', idCard: '',
     houseArea: 100, feeStartDate: '', decorateDate: '', contractDate: '',
     houseStatus: HouseStatus.UNDELIVERED,
@@ -179,8 +297,125 @@ function openCreate() {
   dialogVisible.value = true;
 }
 
+function downloadTemplate() {
+  const sample = [
+    TEMPLATE_HEADERS,
+    [
+      currentProjectId.value ?? 1,
+      projectName.value !== '未选择项目' ? projectName.value : '示例花园',
+      '1-101',
+      '张三',
+      '13800138000',
+      '',
+      '住房',
+      98.5,
+      '2017-01-01',
+      96,
+      '入住',
+      '业主',
+      '2016-12-15',
+      '',
+    ],
+    [
+      '',
+      '',
+      '临街-01',
+      '王五',
+      '13900139000',
+      '',
+      '门面一楼',
+      60,
+      '2018-06-01',
+      24,
+      '入住',
+      '业主',
+      '',
+      '',
+    ],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(sample);
+  sheet['!cols'] = TEMPLATE_HEADERS.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+  const guide = XLSX.utils.aoa_to_sheet([
+    ['填写说明'],
+    ['1. 必填：房号、姓名、手机号、房屋面积、物业费起始日期（身份证号可选）'],
+    ['2. 项目：可填「项目编号」或「项目名称」；都空则使用导入弹窗中的默认项目'],
+    ['3. 房屋性质：住房 / 门面一楼（面积×2）/ 门面二楼（面积×0.7）；也可填「一楼」「二楼」'],
+    ['4. 物业费起始日期：建议 YYYY-MM-DD；也可填 YYYY-MM'],
+    ['5. 已缴月数：期初已缴清的月份数（从起始月起连续已缴），用于系统启用前的历史缴费'],
+    ['6. 房屋状态：未交房 / 装修中 / 入住 / 空置'],
+    ['7. 住户类型：业主 / 租户'],
+    ['8. 请删除示例行后再导入正式数据；单次建议不超过 2000 行'],
+  ]);
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, '客户导入');
+  XLSX.utils.book_append_sheet(book, guide, '填写说明');
+  XLSX.writeFile(book, '客户档案导入模板.xlsx');
+  ElMessage.success('模板已下载');
+}
+
+function openImport() {
+  if (!requireProjectId()) return;
+  importRows.value = [];
+  importResult.value = null;
+  importVisible.value = true;
+  if (fileInput.value) fileInput.value.value = '';
+}
+
+function onImportFile(ev: Event) {
+  const file = (ev.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = new Uint8Array(reader.result as ArrayBuffer);
+      const wb = XLSX.read(data, { type: 'array', cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+      importRows.value = rows.filter((r) =>
+        Object.values(r).some((v) => String(v ?? '').trim() !== ''),
+      );
+      importResult.value = null;
+      ElMessage.success(`已读取 ${importRows.value.length} 行，请点击开始导入`);
+    } catch {
+      ElMessage.error('无法解析 Excel，请使用下载的模板');
+      importRows.value = [];
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function submitImport() {
+  const pid = requireProjectId();
+  if (!pid) return;
+  if (!importRows.value.length) {
+    ElMessage.warning('请先选择 Excel 文件');
+    return;
+  }
+  importing.value = true;
+  try {
+    importResult.value = await http.post<
+      never,
+      {
+        total: number;
+        successCount: number;
+        failedCount: number;
+        failed: { row: number; roomNo?: string; reason: string }[];
+      }
+    >('/customers/import', {
+      defaultProjectId: pid,
+      confirmProfile: importConfirmProfile.value,
+      rows: importRows.value,
+    });
+    ElMessage.success(`导入完成：成功 ${importResult.value.successCount}，失败 ${importResult.value.failedCount}`);
+    await load();
+  } finally {
+    importing.value = false;
+  }
+}
+
 function checkIdCard() {
-  const id = form.idCard;
+  const id = form.idCard.trim();
+  if (!id) return;
   if (!/^\d{17}[\dXx]$/.test(id)) {
     ElMessage.warning('身份证号格式不正确（须为 18 位）');
     return;
@@ -194,13 +429,21 @@ function checkIdCard() {
 }
 
 async function submit() {
-  if (!form.projectId || !form.name || !form.phone || !form.roomNo || !form.idCard || !form.houseArea || !form.feeStartDate) {
-    ElMessage.warning('请填写全部必填项（含身份证号作为唯一身份标识）');
+  const pid = requireProjectId();
+  if (!pid) return;
+  if (!form.name || !form.phone || !form.roomNo || !form.houseArea || !form.feeStartDate) {
+    ElMessage.warning('请填写全部必填项（手机号为主识别标识）');
+    return;
+  }
+  if (!/^1[3-9]\d{9}$/.test(form.phone)) {
+    ElMessage.warning('手机号格式不正确');
     return;
   }
   try {
     const created = await http.post<never, { id: number }>('/customers', {
       ...form,
+      projectId: pid,
+      idCard: form.idCard.trim() || undefined,
       contractDate: form.contractDate || undefined,
       decorateDate: form.decorateDate || undefined,
     });
@@ -217,25 +460,16 @@ async function submit() {
   }
 }
 
-watch(
-  () => projectStore.currentProjectId,
-  (id) => {
-    if (id && query.projectId == null) {
-      query.projectId = id;
-      void load();
-    }
-  },
-);
-
 onMounted(async () => {
-  const data = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
-  projects.value = data.list;
   if (!projectStore.loaded) await projectStore.loadOptions();
-  if (projectStore.currentProjectId) query.projectId = projectStore.currentProjectId;
   await load();
 });
 </script>
 
 <style scoped>
-.card-header { display: flex; justify-content: space-between; align-items: center; }
+.card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.header-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.import-tip { margin: 0 0 12px; font-size: 13px; color: var(--el-text-color-secondary); line-height: 1.5; }
+.import-result { margin-top: 12px; font-size: 13px; }
+.import-project-hint { margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
 </style>

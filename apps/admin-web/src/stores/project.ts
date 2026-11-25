@@ -25,14 +25,15 @@ export const useProjectStore = defineStore('project', {
       try {
         const list = await http.get<never, ProjectOption[]>('/projects/options/all');
         this.options = Array.isArray(list) ? list : [];
-        if (this.currentProjectId && !this.options.some((p) => p.id === this.currentProjectId)) {
-          this.currentProjectId = this.options[0]?.id ?? null;
-        }
-        if (!this.currentProjectId && this.options.length) {
-          this.currentProjectId = this.options[0].id;
-        }
+        const firstId = this.options[0]?.id ?? null;
+        const valid =
+          this.currentProjectId != null && this.options.some((p) => p.id === this.currentProjectId);
+        // 无有效选中时默认第一个项目
+        this.currentProjectId = valid ? this.currentProjectId : firstId;
         if (this.currentProjectId) {
           localStorage.setItem(STORAGE_KEY, String(this.currentProjectId));
+        } else {
+          localStorage.removeItem(STORAGE_KEY);
         }
         this.loaded = true;
       } catch {
@@ -41,8 +42,12 @@ export const useProjectStore = defineStore('project', {
       }
     },
     setCurrent(id: number | null) {
-      this.currentProjectId = id;
-      if (id) localStorage.setItem(STORAGE_KEY, String(id));
+      const next =
+        id != null && this.options.some((p) => p.id === id)
+          ? id
+          : (this.options[0]?.id ?? null);
+      this.currentProjectId = next;
+      if (next) localStorage.setItem(STORAGE_KEY, String(next));
       else localStorage.removeItem(STORAGE_KEY);
     },
   },

@@ -1,5 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { FeeItemCode, FeeParameterCode, HouseStatus } from '@pms/shared';
+import {
+  FeeItemCode,
+  FeeParameterCode,
+  HouseStatus,
+  PropertyType,
+  isCommercialProperty,
+  normalizePropertyType,
+  PROPERTY_TYPE_LABELS,
+} from '@pms/shared';
 import { FeeParameterService } from '../fee-parameter/fee-parameter.service';
 import { PropertyFeeLedgerEntity } from '../../database/entities/charging-entities';
 import { CustomerEntity } from '../../database/entities/org-entities';
@@ -15,36 +23,84 @@ export interface FeeCalcResult {
 export interface ParameterContext {
   depositAmount: number;
   decorationMgmtRate: number;
+  decorationMgmtRateResidential: number;
+  decorationMgmtRateCommercial: number;
   garbageTransportRate: number;
+  /** 当前选用的物业费单价 */
   unitPrice: number;
+  unitPriceResidential: number;
+  unitPriceCommercialL1: number;
+  unitPriceCommercialL2: number;
+  propertyType: PropertyType;
 }
 
 /**
  * 费用计算引擎：纯函数计算器 + 参数快照。
  * 全程整数（分）运算，仅最终金额一步四舍五入；
  * 面积以 0.01㎡ 百分位整数参与运算。
+ *
+ * 门面与住房口径不同：
+ * - 住房物业费：面积 × 住房单价 × 月数
+ * - 门面一楼：面积 × 2 × 月数；门面二楼：面积 × 0.7 × 月数
+ * - 垃圾清运：面积 × 2.5（住房/门面相同）
+ * - 住房装修管理费：面积 × 90 × 0.02；门面：面积 × 0.01 × 90
  */
 @Injectable()
 export class FeeCalculationService {
   constructor(private readonly feeParameterService: FeeParameterService) {}
 
-  /** 解析当前生效参数并输出不可变参数上下文 */
-  async resolveParameters(companyId: number, projectId?: number): Promise<ParameterContext> {
+  /** 解析当前生效参数；propertyType 决定住房/门面楼层单价与装修管理费 */
+  async resolveParameters(
+    companyId: number,
+    projectId?: number,
+    propertyType: PropertyType | string = PropertyType.RESIDENTIAL,
+  ): Promise<ParameterContext> {
     const params = await this.feeParameterService.current(companyId, projectId);
+    const unitPriceResidential = params[FeeParameterCode.PROPERTY_FEE_UNIT_PRICE];
+    const unitPriceCommercialL1 =
+      params[FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL] ?? unitPriceResidential;
+    const unitPriceCommercialL2 =
+      params[FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2] ?? 70;
+    const decorationMgmtRateResidential = params[FeeParameterCode.DECORATION_MGMT_RATE];
+    const decorationMgmtRateCommercial =
+      params[FeeParameterCode.DECORATION_MGMT_RATE_COMMERCIAL] ?? 90;
+
+    const type = normalizePropertyType(propertyType);
+    let unitPrice = unitPriceResidential;
+    let decorationMgmtRate = decorationMgmtRateResidential;
+    if (type === PropertyType.COMMERCIAL_L1) {
+      unitPrice = unitPriceCommercialL1;
+      decorationMgmtRate = decorationMgmtRateCommercial;
+    } else if (type === PropertyType.COMMERCIAL_L2) {
+      unitPrice = unitPriceCommercialL2;
+      decorationMgmtRate = decorationMgmtRateCommercial;
+    }
+
     return {
       depositAmount: params[FeeParameterCode.DEPOSIT_DECORATION_AMOUNT],
-      decorationMgmtRate: params[FeeParameterCode.DECORATION_MGMT_RATE],
+      decorationMgmtRate,
+      decorationMgmtRateResidential,
+      decorationMgmtRateCommercial,
       garbageTransportRate: params[FeeParameterCode.GARBAGE_TRANSPORT_RATE],
-      unitPrice: params[FeeParameterCode.PROPERTY_FEE_UNIT_PRICE],
+      unitPrice,
+      unitPriceResidential,
+      unitPriceCommercialL1,
+      unitPriceCommercialL2,
+      propertyType: type,
     };
   }
 
   snapshot(ctx: ParameterContext): Record<string, number> {
     return {
       DEPOSIT_DECORATION_AMOUNT: ctx.depositAmount,
-      DECORATION_MGMT_RATE: ctx.decorationMgmtRate,
+      DECORATION_MGMT_RATE: ctx.decorationMgmtRateResidential,
+      DECORATION_MGMT_RATE_COMMERCIAL: ctx.decorationMgmtRateCommercial,
       GARBAGE_TRANSPORT_RATE: ctx.garbageTransportRate,
-      PROPERTY_FEE_UNIT_PRICE: ctx.unitPrice,
+      PROPERTY_FEE_UNIT_PRICE: ctx.unitPriceResidential,
+      PROPERTY_FEE_UNIT_PRICE_COMMERCIAL: ctx.unitPriceCommercialL1,
+      PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2: ctx.unitPriceCommercialL2,
+      UNIT_PRICE_APPLIED: ctx.unitPrice,
+      DECORATION_RATE_APPLIED: ctx.decorationMgmtRate,
     };
   }
 
@@ -58,35 +114,51 @@ export class FeeCalculationService {
     };
   }
 
-  /** 装修管理费：面积 × 90 × 0.01 元（面积百分位 × rate 分 ÷ 100） */
+  /**
+   * 装修管理费：
+   * - 住房：面积 × 90 × 0.02 = 面积 × 1.8 元/㎡
+   * - 门面：面积 × 0.01 × 90 = 面积 × 0.9 元/㎡
+   */
   calcDecorationMgmt(areaFen: number, ctx: ParameterContext): FeeCalcResult {
     const amount = Math.round((areaFen * ctx.decorationMgmtRate) / 100);
+    const area = (areaFen / 100).toFixed(2);
+    const yuanPerSqm = (ctx.decorationMgmtRate / 100).toFixed(2);
+    const formula = isCommercialProperty(ctx.propertyType)
+      ? `${area}㎡ × 0.01 × 90（即 ${yuanPerSqm} 元/㎡，门面）`
+      : `${area}㎡ × 90 × 0.02（即 ${yuanPerSqm} 元/㎡，住房）`;
     return {
       feeItemCode: FeeItemCode.DECORATION_MGMT,
       amount,
-      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × ${ctx.decorationMgmtRate}分/㎡ = ${(amount / 100).toFixed(2)}元`,
+      calcBasis: `${formula} = ${(amount / 100).toFixed(2)}元`,
       parameterSnapshot: this.snapshot(ctx),
     };
   }
 
-  /** 垃圾清运费：面积 × 2.5 元（面积百分位 × rate 分 ÷ 100） */
+  /** 垃圾清运费：面积 × 2.5 元（住房/门面相同） */
   calcGarbageTransport(areaFen: number, ctx: ParameterContext): FeeCalcResult {
     const amount = Math.round((areaFen * ctx.garbageTransportRate) / 100);
     return {
       feeItemCode: FeeItemCode.GARBAGE_TRANSPORT,
       amount,
-      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × ${ctx.garbageTransportRate}分/㎡ = ${(amount / 100).toFixed(2)}元`,
+      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × 2.5 元/㎡ = ${(amount / 100).toFixed(2)}元`,
       parameterSnapshot: this.snapshot(ctx),
     };
   }
 
-  /** 物业费：面积 × 单价 × 累计欠费月份（面积百分位 × 单价分 ÷ 100 × 月数） */
+  /** 物业费：面积 × 单价 × 月数（住房 / 门面一楼×2 / 门面二楼×0.7） */
   calcPropertyFee(areaFen: number, months: number, ctx: ParameterContext): FeeCalcResult {
     const amount = Math.round((areaFen * ctx.unitPrice) / 100) * months;
+    const typeLabel = PROPERTY_TYPE_LABELS[ctx.propertyType] ?? '住房';
+    const rateHint =
+      ctx.propertyType === PropertyType.COMMERCIAL_L1
+        ? '面积×2'
+        : ctx.propertyType === PropertyType.COMMERCIAL_L2
+          ? '面积×0.7'
+          : `${(ctx.unitPrice / 100).toFixed(2)}元/㎡/月`;
     return {
       feeItemCode: FeeItemCode.PROPERTY_FEE,
       amount,
-      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × ${ctx.unitPrice}分/㎡/月 × ${months}个月 = ${(amount / 100).toFixed(2)}元`,
+      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × ${(ctx.unitPrice / 100).toFixed(2)}元/㎡/月（${typeLabel}，${rateHint}）× ${months}个月 = ${(amount / 100).toFixed(2)}元`,
       parameterSnapshot: this.snapshot(ctx),
     };
   }
@@ -201,11 +273,9 @@ export class FeeCalculationService {
 
   /** 交房缴费的累计欠费月份数（无台账客户按起始时间推导） */
   arrearsMonthsFor(customer: CustomerEntity, ledgers: PropertyFeeLedgerEntity[], now: Date = new Date()): number {
-    // 已交房且有台账：剩余应交费月份
     if (customer.houseStatus !== HouseStatus.UNDELIVERED && ledgers.length > 0) {
       return this.remainingMonths(customer.feeStartDate, ledgers, now);
     }
-    // 未交房/无台账：从物业费起始月推导至当前月
     return this.remainingMonths(customer.feeStartDate, ledgers, now);
   }
 }

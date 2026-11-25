@@ -46,7 +46,11 @@ export class FeeCalculationController {
     const projectId = Number(dto.projectId);
     const customer = await this.customerService.getByRoomNo(this.companyId(), projectId, dto.roomNo);
     const ledgers = await this.ledgerRepo.find({ where: { companyId: this.companyId(), customerId: customer.id } });
-    const ctx = await this.feeCalculationService.resolveParameters(this.companyId(), projectId);
+    const ctx = await this.feeCalculationService.resolveParameters(
+      this.companyId(),
+      projectId,
+      customer.propertyType,
+    );
     const arrearsMonths = this.feeCalculationService.arrearsMonthsFor(customer, ledgers);
     const feeItems = this.feeCalculationService.calcDeliveryFees(customer.houseArea, arrearsMonths, ctx);
     const vacantEligible = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
@@ -75,7 +79,11 @@ export class FeeCalculationController {
     const projectId = Number(dto.projectId);
     const customer = await this.customerService.getByRoomNo(this.companyId(), projectId, dto.roomNo);
     const ledgers = await this.ledgerRepo.find({ where: { companyId: this.companyId(), customerId: customer.id } });
-    const ctx = await this.feeCalculationService.resolveParameters(this.companyId(), projectId);
+    const ctx = await this.feeCalculationService.resolveParameters(
+      this.companyId(),
+      projectId,
+      customer.propertyType,
+    );
 
     const totalBillableMonths = this.feeCalculationService.totalBillableMonths(customer.feeStartDate);
     const paidMonths = this.feeCalculationService.paidMonths(ledgers);
@@ -127,7 +135,11 @@ export class FeeCalculationController {
     const totalBillableMonths = this.feeCalculationService.totalBillableMonthsAsOf(customer.feeStartDate, asOfMonth);
     const paidMonths = this.feeCalculationService.paidMonthsUpTo(ledgers, asOfMonth);
     const remainingMonths = Math.max(0, totalBillableMonths - paidMonths);
-    const ctx = await this.feeCalculationService.resolveParameters(this.companyId(), customer.projectId);
+    const ctx = await this.feeCalculationService.resolveParameters(
+      this.companyId(),
+      customer.projectId,
+      customer.propertyType,
+    );
     return {
       feeStartMonth,
       feeEndMonth: asOfMonth,
@@ -137,6 +149,7 @@ export class FeeCalculationController {
       arrearsMonths: remainingMonths,
       arrearsAmount: Math.round((customer.houseArea * ctx.unitPrice) / 100) * remainingMonths,
       unitPrice: ctx.unitPrice,
+      propertyType: customer.propertyType ?? 'RESIDENTIAL',
       paidLedgers: ledgers.map((l) => ({ startMonth: l.startMonth, endMonth: l.endMonth, months: l.months, status: l.status })),
     };
   }

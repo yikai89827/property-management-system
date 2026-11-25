@@ -72,11 +72,12 @@ export class PersonEntity {
   @Column({ name: 'phone_blind_index' })
   phoneBlindIndex!: string;
 
-  @Column({ name: 'id_card_encrypted', type: 'text' })
-  idCardEncrypted!: string;
+  /** 可选：历史台账大量缺失身份证时允许为空，改以手机号识别 */
+  @Column({ name: 'id_card_encrypted', type: 'text', nullable: true })
+  idCardEncrypted?: string;
 
-  @Column({ name: 'id_card_blind_index' })
-  idCardBlindIndex!: string;
+  @Column({ name: 'id_card_blind_index', nullable: true })
+  idCardBlindIndex?: string;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: string;
@@ -109,6 +110,10 @@ export class CustomerEntity {
   @Column({ name: 'resident_type', default: ResidentType.OWNER })
   residentType!: string;
 
+  /** 住房 / 门面一楼 / 门面二楼，决定物业费与装修管理费口径 */
+  @Column({ name: 'property_type', default: 'RESIDENTIAL' })
+  propertyType!: string;
+
   @Column({ name: 'name' })
   name!: string;
 
@@ -116,18 +121,19 @@ export class CustomerEntity {
   @Column({ name: 'phone_encrypted', type: 'text' })
   phoneEncrypted!: string;
 
-  /** HMAC-SHA256 盲索引 */
+  /** HMAC-SHA256 盲索引（自然人主识别） */
   @Column({ name: 'phone_blind_index' })
   phoneBlindIndex!: string;
 
   @Column({ name: 'room_no' })
   roomNo!: string;
 
-  @Column({ name: 'id_card_encrypted', type: 'text' })
-  idCardEncrypted!: string;
+  /** 可选；无身份证时以手机号+姓名识别 */
+  @Column({ name: 'id_card_encrypted', type: 'text', nullable: true })
+  idCardEncrypted?: string;
 
-  @Column({ name: 'id_card_blind_index' })
-  idCardBlindIndex!: string;
+  @Column({ name: 'id_card_blind_index', nullable: true })
+  idCardBlindIndex?: string;
 
   /** 房屋面积，单位 0.01㎡（百分位整数，杜绝浮点） */
   @Column({ name: 'house_area' })

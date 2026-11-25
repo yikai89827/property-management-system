@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsNumber, IsObject, IsOptional, IsString, MinLength } from 'class-validator';
-import { ErrorCodes, HouseStatus, HOUSE_STATUS_LABELS, PermissionCodes, ResidentType } from '@pms/shared';
+import { IsArray, IsBoolean, IsIn, IsNumber, IsObject, IsOptional, IsString, MinLength } from 'class-validator';
+import { ErrorCodes, HouseStatus, HOUSE_STATUS_LABELS, PermissionCodes, PropertyType, ResidentType } from '@pms/shared';
 import { RequirePermissions } from '../../common/guards/require-permissions.decorator';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -23,9 +23,9 @@ class CreateCustomerDto {
   @MinLength(1)
   roomNo!: string;
 
+  @IsOptional()
   @IsString()
-  @MinLength(15)
-  idCard!: string;
+  idCard?: string;
 
   @IsNumber()
   houseArea!: number;
@@ -49,8 +49,29 @@ class CreateCustomerDto {
   residentType?: ResidentType;
 
   @IsOptional()
+  @IsIn(Object.values(PropertyType))
+  propertyType?: PropertyType;
+
+  @IsOptional()
   @IsObject()
   ext?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsNumber()
+  paidMonths?: number;
+}
+
+class ImportCustomersDto {
+  @IsOptional()
+  @IsNumber()
+  defaultProjectId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmProfile?: boolean;
+
+  @IsArray()
+  rows!: Record<string, unknown>[];
 }
 
 class UpdateCustomerDto {
@@ -64,6 +85,9 @@ class UpdateCustomerDto {
   @IsOptional()
   @IsIn(Object.values(ResidentType))
   residentType?: ResidentType;
+  @IsOptional()
+  @IsIn(Object.values(PropertyType))
+  propertyType?: PropertyType;
   @IsOptional() @IsObject() ext?: Record<string, unknown>;
 }
 
@@ -99,9 +123,9 @@ class ResaleDto {
   @IsString()
   phone!: string;
 
+  @IsOptional()
   @IsString()
-  @MinLength(15)
-  idCard!: string;
+  idCard?: string;
 
   @IsOptional()
   @IsIn(Object.values(ResidentType))
@@ -157,6 +181,18 @@ export class CustomerController {
     return this.customerService.create({ ...dto, houseStatus: dto.houseStatus });
   }
 
+  /** 一键导入客户（Excel 解析后的行数据；含期初已缴月数） */
+  @RequirePermissions(PermissionCodes.CUSTOMER_CREATE)
+  @Audit('CUSTOMER_IMPORT')
+  @Post('customers/import')
+  importCustomers(@Body() dto: ImportCustomersDto) {
+    return this.customerService.importBatch(this.companyId(), {
+      defaultProjectId: dto.defaultProjectId,
+      confirmProfile: dto.confirmProfile ?? true,
+      rows: Array.isArray(dto.rows) ? dto.rows : [],
+    });
+  }
+
   @RequirePermissions(PermissionCodes.CUSTOMER_VIEW)
   @Get('customers')
   list(
@@ -166,6 +202,7 @@ export class CustomerController {
     @Query('phone') phone?: string,
     @Query('idCard') idCard?: string,
     @Query('residentType') residentType?: string,
+    @Query('propertyType') propertyType?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
@@ -176,6 +213,7 @@ export class CustomerController {
       phone,
       idCard,
       residentType,
+      propertyType,
       page: page ? Number(page) : undefined,
       pageSize: pageSize ? Number(pageSize) : undefined,
     });
@@ -214,7 +252,7 @@ export class CustomerController {
   @Audit('CUSTOMER_STATUS_TRANSITION')
   @Post('customers/:id/house-status')
   transitionStatus(@Param('id') id: string, @Body() dto: TransitionStatusDto) {
-    return this.customerService.transitionStatus(this.companyId(), Number(id), dto.target);
+    return this.customerService.transitionStatus(this.companyId(), this.userId(), Number(id), dto.target);
   }
 
   @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)

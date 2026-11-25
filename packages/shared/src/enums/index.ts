@@ -1,4 +1,4 @@
-/** 住户身份类型：业主 / 租户（以身份证号作为公司内唯一身份） */
+/** 住户身份类型：业主 / 租户（自然人优先以手机号识别，身份证可选） */
 export enum ResidentType {
   OWNER = 'OWNER',
   TENANT = 'TENANT',
@@ -8,6 +8,40 @@ export const RESIDENT_TYPE_LABELS: Record<ResidentType, string> = {
   [ResidentType.OWNER]: '业主',
   [ResidentType.TENANT]: '租户',
 };
+
+/** 房屋性质：住房 / 门面一楼 / 门面二楼（计费口径不同） */
+export enum PropertyType {
+  RESIDENTIAL = 'RESIDENTIAL',
+  /** @deprecated 兼容旧数据，等同门面一楼 */
+  COMMERCIAL = 'COMMERCIAL',
+  COMMERCIAL_L1 = 'COMMERCIAL_L1',
+  COMMERCIAL_L2 = 'COMMERCIAL_L2',
+}
+
+export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
+  [PropertyType.RESIDENTIAL]: '住房',
+  [PropertyType.COMMERCIAL]: '门面一楼',
+  [PropertyType.COMMERCIAL_L1]: '门面一楼',
+  [PropertyType.COMMERCIAL_L2]: '门面二楼',
+};
+
+/** 是否门面（含旧 COMMERCIAL） */
+export function isCommercialProperty(type: PropertyType | string | undefined | null): boolean {
+  return (
+    type === PropertyType.COMMERCIAL ||
+    type === PropertyType.COMMERCIAL_L1 ||
+    type === PropertyType.COMMERCIAL_L2
+  );
+}
+
+/** 归一化房屋性质（旧 COMMERCIAL → 一楼） */
+export function normalizePropertyType(type: PropertyType | string | undefined | null): PropertyType {
+  if (type === PropertyType.COMMERCIAL_L2) return PropertyType.COMMERCIAL_L2;
+  if (type === PropertyType.COMMERCIAL || type === PropertyType.COMMERCIAL_L1) {
+    return PropertyType.COMMERCIAL_L1;
+  }
+  return PropertyType.RESIDENTIAL;
+}
 
 /** 房屋状态 */
 export enum HouseStatus {
@@ -57,16 +91,27 @@ export const FEE_ITEM_LABELS: Record<FeeItemCode, string> = {
 /** 费用参数项编码（费用参数配置表 item_code） */
 export enum FeeParameterCode {
   DEPOSIT_DECORATION_AMOUNT = 'DEPOSIT_DECORATION_AMOUNT',
+  /** 住房装修管理费：面积×90×0.02 = 1.8 元/㎡ */
   DECORATION_MGMT_RATE = 'DECORATION_MGMT_RATE',
+  /** 门面装修管理费：面积×0.01×90 = 0.9 元/㎡ */
+  DECORATION_MGMT_RATE_COMMERCIAL = 'DECORATION_MGMT_RATE_COMMERCIAL',
   GARBAGE_TRANSPORT_RATE = 'GARBAGE_TRANSPORT_RATE',
+  /** 住房物业费单价（分/㎡/月） */
   PROPERTY_FEE_UNIT_PRICE = 'PROPERTY_FEE_UNIT_PRICE',
+  /** 门面一楼物业费单价（分/㎡/月），默认 2.00 元 */
+  PROPERTY_FEE_UNIT_PRICE_COMMERCIAL = 'PROPERTY_FEE_UNIT_PRICE_COMMERCIAL',
+  /** 门面二楼物业费单价（分/㎡/月），默认 0.70 元 */
+  PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2 = 'PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2',
 }
 
 export const FEE_PARAMETER_LABELS: Record<FeeParameterCode, string> = {
   [FeeParameterCode.DEPOSIT_DECORATION_AMOUNT]: '装修押金（元）',
-  [FeeParameterCode.DECORATION_MGMT_RATE]: '装修管理费系数（元/㎡）',
-  [FeeParameterCode.GARBAGE_TRANSPORT_RATE]: '垃圾清运费（元/㎡）',
-  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE]: '物业费单价（元/㎡/月）',
+  [FeeParameterCode.DECORATION_MGMT_RATE]: '住房装修管理费（元/㎡）= 面积×90×0.02',
+  [FeeParameterCode.DECORATION_MGMT_RATE_COMMERCIAL]: '门面装修管理费（元/㎡）= 面积×0.01×90',
+  [FeeParameterCode.GARBAGE_TRANSPORT_RATE]: '垃圾清运费（元/㎡）= 面积×2.5',
+  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE]: '住房物业费单价（元/㎡/月）',
+  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL]: '门面一楼物业费单价（元/㎡/月）= 面积×2',
+  [FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2]: '门面二楼物业费单价（元/㎡/月）= 面积×0.7',
 };
 
 /** 优惠类型 */

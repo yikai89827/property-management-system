@@ -2,10 +2,8 @@
   <el-card>
     <template #header>其他费用缴费工作台</template>
     <el-form label-width="120px" style="max-width: 600px">
-      <el-form-item label="项目" required>
-        <el-select v-model="projectId">
-          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-        </el-select>
+      <el-form-item label="当前项目">
+        <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
       </el-form-item>
       <el-form-item label="房号" required>
         <el-input v-model="roomNo" style="width: 200px" />
@@ -44,20 +42,20 @@
 import { computed, onMounted, reactive, ref, toRefs } from 'vue';
 import { ElMessage } from 'element-plus';
 import { http } from '@/api/request';
+import { useCurrentProject } from '@/composables/useCurrentProject';
 import ReceiptPreview from './ReceiptPreview.vue';
 
-const projects = ref<{ id: number; name: string }[]>([]);
+const { projectName, requireProjectId } = useCurrentProject();
 const categories = ref<{ code: string; name: string }[]>([]);
 const methods = ref<{ code: string; name: string }[]>([]);
 const form = reactive({
-  projectId: undefined as number | undefined,
   roomNo: '',
   feeCategoryCode: '',
   amountYuan: 100,
   discountYuan: 0,
   paymentMethodCode: 'CASH',
 });
-const { projectId, roomNo, feeCategoryCode, amountYuan, discountYuan, paymentMethodCode } = toRefs(form);
+const { roomNo, feeCategoryCode, amountYuan, discountYuan, paymentMethodCode } = toRefs(form);
 const charging = ref(false);
 const receiptVisible = ref(false);
 const receipt = ref<Record<string, any> | null>(null);
@@ -65,14 +63,16 @@ const receiptPayer = ref<Record<string, any>>({});
 const actual = computed(() => Math.max(0, amountYuan.value - discountYuan.value));
 
 async function submit() {
-  if (!projectId.value || !roomNo.value || !feeCategoryCode.value || amountYuan.value <= 0) {
+  const pid = requireProjectId();
+  if (!pid) return;
+  if (!roomNo.value || !feeCategoryCode.value || amountYuan.value <= 0) {
     ElMessage.warning('请选择费用类别并填写房号与费用金额');
     return;
   }
   charging.value = true;
   try {
     const data = await http.post<never, Record<string, any>>('/charges/other', {
-      projectId: String(projectId.value),
+      projectId: String(pid),
       roomNo: roomNo.value,
       feeCategoryCode: feeCategoryCode.value,
       amount: Math.round(amountYuan.value * 100),
@@ -81,7 +81,7 @@ async function submit() {
     });
     receipt.value = data;
     receiptPayer.value = {
-      projectName: projects.value.find((p) => p.id === projectId.value)?.name ?? '',
+      projectName: projectName.value,
       paymentMethodName: methods.value.find((m) => m.code === paymentMethodCode.value)?.name,
     };
     receiptVisible.value = true;
@@ -97,9 +97,6 @@ async function submit() {
 }
 
 onMounted(async () => {
-  const p = await http.get<never, { list: { id: number; name: string }[] }>('/projects', { params: { pageSize: 100 } });
-  projects.value = p.list;
-  projectId.value = p.list[0]?.id;
   categories.value = (await http.get<never, { code: string; name: string; enabled?: boolean }[]>('/fee-categories')).filter(
     (c) => c.enabled !== false,
   );

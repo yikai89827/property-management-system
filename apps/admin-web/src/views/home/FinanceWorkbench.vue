@@ -2,18 +2,8 @@
   <div class="finance" v-loading="loading">
     <el-card shadow="never" class="filter-card">
       <el-form :inline="true" @submit.prevent>
-        <el-form-item label="项目">
-          <el-select
-            v-model="projectIds"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            clearable
-            placeholder="全部项目"
-            style="min-width: 220px"
-          >
-            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
+        <el-form-item label="当前项目">
+          <el-tag type="primary" effect="plain">{{ projectName }}</el-tag>
         </el-form-item>
         <el-form-item label="粒度">
           <el-radio-group v-model="grain" @change="onGrainChange">
@@ -140,7 +130,9 @@ import { BarChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { http } from '@/api/request';
+import { useCurrentProject } from '@/composables/useCurrentProject';
 import { useThemeStore } from '@/stores/theme';
+import { formatDateTime } from '@/utils/format';
 
 echarts.use([BarChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -162,10 +154,13 @@ interface FinanceOverview {
 }
 
 const theme = useThemeStore();
+const { projectStore, currentProjectId, projectName } = useCurrentProject({
+  onChange: () => {
+    void load();
+  },
+});
 const loading = ref(false);
 const grain = ref<'day' | 'month'>('day');
-const projectIds = ref<number[]>([]);
-const projects = ref<{ id: number; name: string }[]>([]);
 const dayRange = ref<[string, string]>(defaultDayRange());
 const monthRange = ref<[string, string]>(defaultMonthRange());
 
@@ -207,7 +202,7 @@ function yuan(cents: number) {
 }
 
 function formatTime(v: string) {
-  return v ? v.slice(0, 19).replace('T', ' ') : '';
+  return formatDateTime(v);
 }
 
 const kpis = computed(() => [
@@ -215,9 +210,9 @@ const kpis = computed(() => [
   { label: '应收合计', value: yuan(summary.value.receivableAmount), hint: '有效收款单', tone: '' },
   { label: '优惠合计', value: yuan(summary.value.discountAmount), hint: '已入账优惠', tone: '' },
   {
-    label: '覆盖项目',
-    value: String(byProject.value.length || projects.value.length),
-    hint: projectIds.value.length ? `已筛 ${projectIds.value.length} 个` : '全部授权项目',
+    label: '当前项目',
+    value: projectName.value,
+    hint: currentProjectId.value ? `ID ${currentProjectId.value}` : '请先在顶部选择',
     tone: '',
   },
 ]);
@@ -341,10 +336,9 @@ async function load() {
       const last = new Date(ey, em, 0).getDate();
       params.endTime = `${monthRange.value[1]}-${String(last).padStart(2, '0')}`;
     }
-    if (projectIds.value.length) params.projectIds = projectIds.value.join(',');
+    if (currentProjectId.value) params.projectIds = String(currentProjectId.value);
 
     const res = await http.get<never, FinanceOverview>('/statistics/finance-overview', { params });
-    projects.value = res.projects ?? [];
     summary.value = res.summary ?? { receivableAmount: 0, receivedAmount: 0, discountAmount: 0, orderCount: 0 };
     byProject.value = res.byProject ?? [];
     byPeriod.value = res.byPeriod ?? [];
@@ -372,6 +366,7 @@ watch(
 );
 
 onMounted(async () => {
+  if (!projectStore.loaded) await projectStore.loadOptions();
   await load();
   window.addEventListener('resize', onResize);
 });

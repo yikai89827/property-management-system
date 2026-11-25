@@ -10,7 +10,8 @@ import {
   VehiclePlateEntity,
 } from '../../database/entities/org-entities';
 import { ExtKeyRegistryEntity } from '../../database/entities/auth-entities';
-import { ReceiptOrderEntity } from '../../database/entities/charging-entities';
+import { PropertyFeeLedgerEntity, ReceiptOrderEntity } from '../../database/entities/charging-entities';
+import { FeeParameterModule } from '../fee-parameter/fee-parameter.module';
 import { CustomerService } from './customer.service';
 import { CustomerController } from './customer.controller';
 
@@ -27,7 +28,9 @@ import { CustomerController } from './customer.controller';
       DecorateFilingEntity,
       ExtKeyRegistryEntity,
       ReceiptOrderEntity,
+      PropertyFeeLedgerEntity,
     ]),
+    FeeParameterModule,
   ],
   providers: [CustomerService],
   controllers: [CustomerController],

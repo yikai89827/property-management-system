@@ -10,7 +10,12 @@ export class OwnerVerifyDto {
   @IsString()
   projectId!: string;
 
-  /** 身份证号（业主/租户唯一标识，推荐） */
+  /** 手机号（主识别，历史台账缺身份证时使用） */
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  /** 身份证号（可选，有则优先辅助匹配） */
   @IsOptional()
   @IsString()
   idCard?: string;
@@ -60,11 +65,26 @@ export class OwnerChargePropertyDto {
 export class OwnerController {
   constructor(private readonly ownerService: OwnerService) {}
 
+  /** 扫码进入：可选小区列表（公开，便于一人多小区切换） */
+  @Public()
+  @Get('projects/briefs')
+  listProjectBriefs() {
+    return this.ownerService.listProjectBriefs();
+  }
+
+  /** 扫码进入：按项目 ID 取小区名称（公开） */
+  @Public()
+  @Get('projects/:projectId/brief')
+  projectBrief(@Param('projectId') projectId: string) {
+    return this.ownerService.projectBrief(Number(projectId));
+  }
+
   @Public()
   @Post('auth/verify')
   verify(@Body() dto: OwnerVerifyDto) {
     return this.ownerService.verify({
       projectId: Number(dto.projectId),
+      phone: dto.phone,
       idCard: dto.idCard,
       roomId: dto.roomId,
       name: dto.name,

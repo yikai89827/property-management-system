@@ -38,7 +38,7 @@
       </el-table-column>
       <el-table-column prop="payeeName" label="收款人" width="100" />
       <el-table-column label="收款日期" width="170">
-        <template #default="{ row }">{{ row.paidAt?.slice(0, 19).replace('T', ' ') }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.paidAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="80">
         <template #default="{ row }">
@@ -78,6 +78,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { http } from '@/api/request';
+import { formatDateTime } from '@/utils/format';
 import ReceiptPreview from './ReceiptPreview.vue';
 
 const ReceiptPrint = ReceiptPreview;

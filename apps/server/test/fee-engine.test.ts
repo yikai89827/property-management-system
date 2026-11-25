@@ -1,22 +1,51 @@
-import { FeeCalculationService } from '../src/modules/fee-calculation/fee-calculation.service';
-import { LedgerStatus } from '@pms/shared';
+import { FeeCalculationService, ParameterContext } from '../src/modules/fee-calculation/fee-calculation.service';
+import { LedgerStatus, PropertyType } from '@pms/shared';
 
-describe('费用计算引擎（纯函数 + 整数分运算）', () => {
-  const service = new FeeCalculationService(null as never);
-  const ctx = {
-    depositAmount: 200000,
-    decorationMgmtRate: 90,
-    garbageTransportRate: 250,
-    unitPrice: 120,
+function makeCtx(partial: Partial<ParameterContext> = {}): ParameterContext {
+  const unitPriceResidential = partial.unitPriceResidential ?? 120;
+  const unitPriceCommercialL1 = partial.unitPriceCommercialL1 ?? 200;
+  const unitPriceCommercialL2 = partial.unitPriceCommercialL2 ?? 70;
+  const decorationMgmtRateResidential = partial.decorationMgmtRateResidential ?? 180;
+  const decorationMgmtRateCommercial = partial.decorationMgmtRateCommercial ?? 90;
+  const propertyType = partial.propertyType ?? PropertyType.RESIDENTIAL;
+  const unitPrice =
+    partial.unitPrice ??
+    (propertyType === PropertyType.COMMERCIAL_L1
+      ? unitPriceCommercialL1
+      : propertyType === PropertyType.COMMERCIAL_L2
+        ? unitPriceCommercialL2
+        : unitPriceResidential);
+  const decorationMgmtRate =
+    partial.decorationMgmtRate ??
+    (propertyType === PropertyType.COMMERCIAL_L1 || propertyType === PropertyType.COMMERCIAL_L2
+      ? decorationMgmtRateCommercial
+      : decorationMgmtRateResidential);
+  return {
+    depositAmount: partial.depositAmount ?? 200000,
+    decorationMgmtRate,
+    decorationMgmtRateResidential,
+    decorationMgmtRateCommercial,
+    garbageTransportRate: partial.garbageTransportRate ?? 250,
+    unitPrice,
+    unitPriceResidential,
+    unitPriceCommercialL1,
+    unitPriceCommercialL2,
+    propertyType,
   };
+}
 
-  it('spec 5.3.1 规则 1a 标准示例：面积 100㎡、累计欠费 3 个月', () => {
+describe('费用计算引擎（住房口径）', () => {
+  const service = new FeeCalculationService(null as never);
+  const ctx = makeCtx({ propertyType: PropertyType.RESIDENTIAL });
+
+  it('交房四项：面积 100㎡、欠费 3 个月（住房装修 1.8、物业 1.2）', () => {
     const items = service.calcDeliveryFees(10000, 3, ctx);
     expect(items[0].amount).toBe(200000); // 装修押金 2000 元
-    expect(items[1].amount).toBe(9000); // 装修管理费 90 元（100×90×0.01）
+    expect(items[1].amount).toBe(18000); // 装修管理费 180 元（100×90×0.02）
     expect(items[2].amount).toBe(25000); // 垃圾清运费 250 元（100×2.5）
     expect(items[3].amount).toBe(36000); // 物业费 360 元（100×1.2×3）
-    // 逐项带计算依据
+    expect(items[1].calcBasis).toContain('90 × 0.02');
+    expect(items[1].calcBasis).toContain('住房');
     for (const item of items) {
       expect(item.calcBasis.length).toBeGreaterThan(0);
       expect(item.parameterSnapshot).toBeDefined();
@@ -27,15 +56,66 @@ describe('费用计算引擎（纯函数 + 整数分运算）', () => {
     const areaFen = 3333; // 33.33㎡
     const decoration = service.calcDecorationMgmt(areaFen, ctx);
     const garbage = service.calcGarbageTransport(areaFen, ctx);
-    expect(decoration.amount).toBe(3000); // 3333×90/100 = 2999.7 → 四舍五入 3000 分
+    // 3333×180/100 = 5999.4 → 5999 分
+    expect(decoration.amount).toBe(5999);
     expect(garbage.amount).toBe(8333); // 3333×250/100 = 8332.5 → 8333 分
-    // 整数分运算（无小数残留）
     expect(Number.isInteger(decoration.amount)).toBe(true);
     expect(Number.isInteger(garbage.amount)).toBe(true);
   });
 
   it('物业费 = 面积百分位 × 单价分 ÷ 100 × 月数', () => {
     expect(service.calcPropertyFee(10000, 6, ctx).amount).toBe(72000); // 100×1.2×6 = 720 元
+  });
+});
+
+describe('费用计算引擎（门面口径）', () => {
+  const service = new FeeCalculationService(null as never);
+
+  it('门面一楼：物业费面积×2，装修管理费面积×0.01×90', () => {
+    const ctx = makeCtx({ propertyType: PropertyType.COMMERCIAL_L1 });
+    expect(ctx.unitPrice).toBe(200);
+    expect(ctx.decorationMgmtRate).toBe(90);
+
+    const property = service.calcPropertyFee(10000, 3, ctx);
+    expect(property.amount).toBe(60000); // 100×2×3 = 600 元
+    expect(property.calcBasis).toContain('门面一楼');
+    expect(property.calcBasis).toContain('面积×2');
+
+    const decoration = service.calcDecorationMgmt(10000, ctx);
+    expect(decoration.amount).toBe(9000); // 100×0.9 = 90 元
+    expect(decoration.calcBasis).toContain('0.01 × 90');
+    expect(decoration.calcBasis).toContain('门面');
+
+    const garbage = service.calcGarbageTransport(10000, ctx);
+    expect(garbage.amount).toBe(25000); // 与住房相同 2.5
+  });
+
+  it('门面二楼：物业费面积×0.7', () => {
+    const ctx = makeCtx({ propertyType: PropertyType.COMMERCIAL_L2 });
+    expect(ctx.unitPrice).toBe(70);
+    const property = service.calcPropertyFee(10000, 2, ctx);
+    expect(property.amount).toBe(14000); // 100×0.7×2 = 140 元
+    expect(property.calcBasis).toContain('门面二楼');
+    expect(property.calcBasis).toContain('面积×0.7');
+  });
+
+  it('旧 COMMERCIAL 归一化为门面一楼单价', async () => {
+    const feeParameterService = {
+      current: async () => ({
+        DEPOSIT_DECORATION_AMOUNT: 200000,
+        DECORATION_MGMT_RATE: 180,
+        DECORATION_MGMT_RATE_COMMERCIAL: 90,
+        GARBAGE_TRANSPORT_RATE: 250,
+        PROPERTY_FEE_UNIT_PRICE: 120,
+        PROPERTY_FEE_UNIT_PRICE_COMMERCIAL: 200,
+        PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2: 70,
+      }),
+    };
+    const svc = new FeeCalculationService(feeParameterService as never);
+    const ctx = await svc.resolveParameters(1, 1, PropertyType.COMMERCIAL);
+    expect(ctx.propertyType).toBe(PropertyType.COMMERCIAL_L1);
+    expect(ctx.unitPrice).toBe(200);
+    expect(ctx.decorationMgmtRate).toBe(90);
   });
 });
 

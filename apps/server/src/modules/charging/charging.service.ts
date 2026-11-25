@@ -103,7 +103,11 @@ export class ChargingService {
 
       // ② 计算四项费用
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId: customer.id } });
-      const ctx = await this.feeCalculationService.resolveParameters(companyId, input.projectId);
+      const ctx = await this.feeCalculationService.resolveParameters(
+        companyId,
+        input.projectId,
+        customer.propertyType,
+      );
       const arrearsMonths = this.feeCalculationService.arrearsMonthsFor(customer, ledgers);
       const items = this.feeCalculationService.calcDeliveryFees(customer.houseArea, arrearsMonths, ctx);
       const receivable = items.reduce((s, i) => s + i.amount, 0);
@@ -248,7 +252,11 @@ export class ChargingService {
 
       // 事务内复查剩余应交费月份 > 0
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId: customer.id } });
-      const ctx = await this.feeCalculationService.resolveParameters(companyId, input.projectId);
+      const ctx = await this.feeCalculationService.resolveParameters(
+        companyId,
+        input.projectId,
+        customer.propertyType,
+      );
       const totalBillableMonths = this.feeCalculationService.totalBillableMonths(customer.feeStartDate);
       const paidMonths = this.feeCalculationService.paidMonths(ledgers);
       const remainingMonths = Math.max(0, totalBillableMonths - paidMonths);

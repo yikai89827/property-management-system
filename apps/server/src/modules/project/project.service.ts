@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { CommonStatus, ErrorCodes } from '@pms/shared';
+import { CommonStatus, ErrorCodes, FeeParameterCode } from '@pms/shared';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { CustomerEntity, ProjectEntity } from '../../database/entities/org-entities';
 import { ReceiptOrderEntity } from '../../database/entities/charging-entities';
+import { FeeParameterService } from '../fee-parameter/fee-parameter.service';
 
 @Injectable()
 export class ProjectService {
@@ -12,6 +13,7 @@ export class ProjectService {
     @InjectRepository(ProjectEntity) private readonly projectRepo: Repository<ProjectEntity>,
     @InjectRepository(ReceiptOrderEntity) private readonly receiptRepo: Repository<ReceiptOrderEntity>,
     @InjectRepository(CustomerEntity) private readonly customerRepo: Repository<CustomerEntity>,
+    private readonly feeParameterService: FeeParameterService,
   ) {}
 
   /** 项目创建：名称≤50、占地面积>0；同公司重名拒绝（PMS-2001） */
@@ -54,10 +56,45 @@ export class ProjectService {
           .andWhere('c.projectId = :projectId', { projectId: p.id })
           .andWhere('c.deletedAt IS NULL')
           .getCount();
-        return { ...this.toView(p), customerCount };
+        const feeItems = await this.feeParameterService.currentWithSource(companyId, p.id);
+        const unit = feeItems.find((i) => i.itemCode === FeeParameterCode.PROPERTY_FEE_UNIT_PRICE);
+        const unitL1 = feeItems.find(
+          (i) => i.itemCode === FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL,
+        );
+        const unitL2 = feeItems.find(
+          (i) => i.itemCode === FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2,
+        );
+        return {
+          ...this.toView(p),
+          customerCount,
+          propertyFeeUnitPrice: unit?.value ?? 0,
+          propertyFeeSource: unit?.source ?? 'company',
+          propertyFeeUnitPriceCommercial: unitL1?.value ?? 200,
+          propertyFeeCommercialSource: unitL1?.source ?? 'company',
+          propertyFeeUnitPriceCommercialL2: unitL2?.value ?? 70,
+          propertyFeeCommercialL2Source: unitL2?.source ?? 'company',
+        };
       }),
     );
     return { list: withStats, total, page, pageSize };
+  }
+
+  /** 项目费用参数（含来源） */
+  async feeParameters(companyId: number, projectId: number) {
+    await this.detail(companyId, projectId);
+    return this.feeParameterService.currentWithSource(companyId, projectId);
+  }
+
+  /** 调整项目级费用参数（新增版本，仅影响新单） */
+  async updateFeeParameter(
+    companyId: number,
+    userId: number,
+    projectId: number,
+    itemCode: FeeParameterCode,
+    value: number,
+  ) {
+    await this.detail(companyId, projectId);
+    return this.feeParameterService.update(companyId, userId, { itemCode, projectId, value });
   }
 
   async detail(companyId: number, id: number) {

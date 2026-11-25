@@ -27,6 +27,27 @@ export class FeeParameterService {
     return params;
   }
 
+  /** 当前生效参数 + 来源（便于项目管理展示「项目自设 / 沿用公司默认」） */
+  async currentWithSource(companyId: number, projectId?: number) {
+    const items: { itemCode: FeeParameterCode; value: number; source: 'project' | 'company' }[] = [];
+    for (const code of Object.values(FeeParameterCode)) {
+      let source: 'project' | 'company' = 'company';
+      let value: number | undefined;
+      if (projectId) {
+        const projectVersion = await this.latest(companyId, projectId, code);
+        if (projectVersion) {
+          value = projectVersion.value;
+          source = 'project';
+        }
+      }
+      if (value === undefined) {
+        value = await this.resolveOne(companyId, code, undefined);
+      }
+      items.push({ itemCode: code, value, source });
+    }
+    return items;
+  }
+
   async resolveOne(companyId: number, code: FeeParameterCode, projectId?: number): Promise<number> {
     if (projectId) {
       const projectVersion = await this.latest(companyId, projectId, code);

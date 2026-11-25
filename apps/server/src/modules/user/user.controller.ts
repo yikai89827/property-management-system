@@ -108,6 +108,15 @@ export class UserController {
     return this.userService.updateUser(this.companyId(), Number(id), dto);
   }
 
+  /** 删除从未登录过的账号 */
+  @RequirePermissions(PermissionCodes.USER_MANAGE)
+  @RequireCompanyAdmin()
+  @Audit('USER_DELETE')
+  @Delete('users/:id')
+  deleteUser(@Param('id') id: string) {
+    return this.userService.deleteUser(this.companyId(), Number(id), TenantContext.getUserId()!);
+  }
+
   @RequirePermissions(PermissionCodes.ROLE_MANAGE)
   @RequireCompanyAdmin()
   @Get('roles')

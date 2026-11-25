@@ -1,7 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { ErrorCodes, HouseStatus, HouseStatusTransitionMatrix, ResidentType } from '@pms/shared';
+import {
+  ErrorCodes,
+  FeeParameterCode,
+  HouseStatus,
+  HouseStatusTransitionMatrix,
+  LedgerStatus,
+  PropertyType,
+  normalizePropertyType,
+  ResidentType,
+} from '@pms/shared';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { CryptoService, isValidIdCard, isValidPhone, isValidPlateNo } from '../../common/crypto/crypto.service';
 import { TenantService } from '../../common/tenant/tenant.service';
@@ -15,7 +24,9 @@ import {
   VehiclePlateEntity,
 } from '../../database/entities/org-entities';
 import { ExtKeyRegistryEntity } from '../../database/entities/auth-entities';
-import { ReceiptOrderEntity } from '../../database/entities/charging-entities';
+import { PropertyFeeLedgerEntity, ReceiptOrderEntity } from '../../database/entities/charging-entities';
+import { FeeParameterService } from '../fee-parameter/fee-parameter.service';
+import { FeeCalculationService } from '../fee-calculation/fee-calculation.service';
 
 const SENSITIVE_FIELDS = new Set(['phone', 'idCard']);
 /** 档案确认后需解锁才能改的核心字段 */
@@ -29,6 +40,7 @@ const PROTECTED_PROFILE_FIELDS = new Set([
   'contractDate',
   'decorateDate',
   'residentType',
+  'propertyType',
   'projectId',
 ]);
 const PROFILE_UNLOCK_TTL_MS = 30 * 60 * 1000;
@@ -46,8 +58,10 @@ export class CustomerService {
     @InjectRepository(OwnershipHistoryEntity) private readonly ownershipRepo: Repository<OwnershipHistoryEntity>,
     @InjectRepository(DecorateFilingEntity) private readonly decorateRepo: Repository<DecorateFilingEntity>,
     @InjectRepository(ReceiptOrderEntity) private readonly receiptRepo: Repository<ReceiptOrderEntity>,
+    @InjectRepository(PropertyFeeLedgerEntity) private readonly ledgerRepo: Repository<PropertyFeeLedgerEntity>,
     @InjectRepository(ExtKeyRegistryEntity) private readonly extKeyRepo: Repository<ExtKeyRegistryEntity>,
     private readonly tenantService: TenantService,
+    private readonly feeParameterService: FeeParameterService,
   ) {}
 
   isProfileLocked(customer: CustomerEntity): boolean {
@@ -59,64 +73,102 @@ export class CustomerService {
   }
 
   /**
-   * 按身份证 upsert 自然人：公司内身份证唯一。
-   * 同一人可绑定多个项目/房号的房屋档案。
+   * 自然人 upsert：
+   * - 有身份证：仍按身份证唯一；
+   * - 无身份证（历史台账常见）：按手机号唯一，姓名须一致。
+   * 同一人可绑定多个项目/房号。
    */
-  async ensurePerson(companyId: number, input: { name: string; phone: string; idCard: string }): Promise<PersonEntity> {
-    const idCard = input.idCard.trim().toUpperCase();
-    if (!idCard) throw new BusinessException(ErrorCodes.ID_CARD_REQUIRED);
-    if (!isValidIdCard(idCard)) throw new BusinessException(ErrorCodes.ID_CARD_INVALID);
+  async ensurePerson(
+    companyId: number,
+    input: { name: string; phone: string; idCard?: string },
+  ): Promise<PersonEntity> {
     if (!isValidPhone(input.phone)) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '电话须为国内手机号格式');
     }
+    const phoneBlind = this.crypto.blindIndex(input.phone);
+    const idCard = input.idCard?.trim().toUpperCase() || '';
 
-    const blind = this.crypto.blindIndex(idCard);
-    let person = await this.personRepo.findOne({ where: { companyId, idCardBlindIndex: blind } });
+    if (idCard) {
+      if (!isValidIdCard(idCard)) throw new BusinessException(ErrorCodes.ID_CARD_INVALID);
+      const blind = this.crypto.blindIndex(idCard);
+      let person = await this.personRepo.findOne({ where: { companyId, idCardBlindIndex: blind } });
+      if (!person) {
+        // 同手机号已存在无证档案时，补录身份证
+        person = await this.personRepo.findOne({ where: { companyId, phoneBlindIndex: phoneBlind } });
+        if (person) {
+          if (person.name !== input.name) {
+            throw new BusinessException(ErrorCodes.ID_CARD_PERSON_MISMATCH, '该手机号已绑定其他姓名');
+          }
+          person.idCardEncrypted = this.crypto.encrypt(idCard);
+          person.idCardBlindIndex = blind;
+          return this.personRepo.save(person);
+        }
+        return this.personRepo.save(
+          this.personRepo.create({
+            companyId,
+            name: input.name,
+            phoneEncrypted: this.crypto.encrypt(input.phone),
+            phoneBlindIndex: phoneBlind,
+            idCardEncrypted: this.crypto.encrypt(idCard),
+            idCardBlindIndex: blind,
+          }),
+        );
+      }
+      if (person.name !== input.name) {
+        throw new BusinessException(ErrorCodes.ID_CARD_PERSON_MISMATCH);
+      }
+      if (person.phoneBlindIndex !== phoneBlind) {
+        person.phoneEncrypted = this.crypto.encrypt(input.phone);
+        person.phoneBlindIndex = phoneBlind;
+        person = await this.personRepo.save(person);
+      }
+      return person;
+    }
+
+    // 无身份证：手机号为主键
+    let person = await this.personRepo.findOne({ where: { companyId, phoneBlindIndex: phoneBlind } });
     if (!person) {
-      person = await this.personRepo.save(
+      return this.personRepo.save(
         this.personRepo.create({
           companyId,
           name: input.name,
           phoneEncrypted: this.crypto.encrypt(input.phone),
-          phoneBlindIndex: this.crypto.blindIndex(input.phone),
-          idCardEncrypted: this.crypto.encrypt(idCard),
-          idCardBlindIndex: blind,
+          phoneBlindIndex: phoneBlind,
+          idCardEncrypted: undefined,
+          idCardBlindIndex: undefined,
         }),
       );
-      return person;
     }
-
-    // 已存在：姓名必须一致，电话可更新
     if (person.name !== input.name) {
-      throw new BusinessException(ErrorCodes.ID_CARD_PERSON_MISMATCH);
-    }
-    const phoneBlind = this.crypto.blindIndex(input.phone);
-    if (person.phoneBlindIndex !== phoneBlind) {
-      person.phoneEncrypted = this.crypto.encrypt(input.phone);
-      person.phoneBlindIndex = phoneBlind;
-      person = await this.personRepo.save(person);
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        '该手机号已登记为其他姓名，请核对（手机号+姓名需一致）',
+      );
     }
     return person;
   }
 
-  /** 客户档案创建（身份证 → 自然人唯一身份；同项目房号唯一；跨项目可同人多房） */
+  /** 客户档案创建（手机号 → 自然人主识别；身份证可选；同项目房号唯一；跨项目可同人多房） */
   async create(input: {
     projectId: number;
     name: string;
     phone: string;
     roomNo: string;
-    idCard: string;
+    idCard?: string;
     houseArea: number;
     contractDate?: string;
     feeStartDate: string;
     decorateDate?: string;
     houseStatus: HouseStatus;
     residentType?: ResidentType;
+    propertyType?: PropertyType;
+    /** 期初已缴月数（导入用，写入台账） */
+    paidMonths?: number;
     ext?: Record<string, unknown>;
   }) {
     const companyId = this.tenantService.requireCompanyId();
-    if (!input.name || !input.phone || !input.roomNo || !input.idCard || !input.houseArea || !input.feeStartDate) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '姓名/电话/房号/身份证号/房屋面积/物业费起始时间为必填项');
+    if (!input.name || !input.phone || !input.roomNo || !input.houseArea || !input.feeStartDate) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '姓名/手机号/房号/房屋面积/物业费起始时间为必填项（身份证可选）');
     }
     const project = await this.projectRepo.findOne({ where: { id: input.projectId, companyId } });
     if (!project) {
@@ -140,9 +192,9 @@ export class CustomerService {
       phone: input.phone,
       idCard: input.idCard,
     });
-    const idCard = input.idCard.trim().toUpperCase();
     const extJson = input.ext ? await this.validateExt(companyId, input.ext) : undefined;
     const residentType = input.residentType ?? ResidentType.OWNER;
+    const propertyType = normalizePropertyType(input.propertyType);
 
     const customer = await this.customerRepo.save(
       this.customerRepo.create({
@@ -150,6 +202,7 @@ export class CustomerService {
         projectId: input.projectId,
         personId: person.id,
         residentType,
+        propertyType,
         name: person.name,
         phoneEncrypted: person.phoneEncrypted,
         phoneBlindIndex: person.phoneBlindIndex,
@@ -164,7 +217,248 @@ export class CustomerService {
         ext: extJson ? JSON.stringify(extJson) : undefined,
       }),
     );
+    if (input.paidMonths && input.paidMonths > 0) {
+      await this.writeOpeningPaidMonths(companyId, customer, input.paidMonths);
+    }
     return this.toView(customer, project.name);
+  }
+
+  /** 期初已缴月数：从物业费起始月起写一条 effective 台账（无收款单） */
+  private async writeOpeningPaidMonths(companyId: number, customer: CustomerEntity, paidMonths: number) {
+    const startMonth = FeeCalculationService.monthOf(customer.feeStartDate);
+    const endMonth = FeeCalculationService.addMonths(startMonth, paidMonths - 1);
+    const pt = normalizePropertyType(customer.propertyType);
+    const unitCode =
+      pt === PropertyType.COMMERCIAL_L2
+        ? FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL_L2
+        : pt === PropertyType.COMMERCIAL_L1
+          ? FeeParameterCode.PROPERTY_FEE_UNIT_PRICE_COMMERCIAL
+          : FeeParameterCode.PROPERTY_FEE_UNIT_PRICE;
+    let unitPrice: number;
+    try {
+      unitPrice = await this.feeParameterService.resolveOne(companyId, unitCode, customer.projectId);
+    } catch {
+      unitPrice = await this.feeParameterService.resolveOne(
+        companyId,
+        FeeParameterCode.PROPERTY_FEE_UNIT_PRICE,
+        customer.projectId,
+      );
+    }
+    await this.ledgerRepo.save(
+      this.ledgerRepo.create({
+        companyId,
+        customerId: customer.id,
+        receiptOrderId: null,
+        startMonth,
+        endMonth,
+        months: paidMonths,
+        unitPriceSnapshot: unitPrice,
+        areaSnapshot: customer.houseArea,
+        status: LedgerStatus.EFFECTIVE,
+      }),
+    );
+  }
+
+  /**
+   * Excel 批量导入客户（期初数据）：
+   * 支持项目编号/项目名称、房号、姓名、手机、身份证、面积、物业费起始日、已缴月数等。
+   */
+  async importBatch(
+    companyId: number,
+    input: {
+      defaultProjectId?: number;
+      confirmProfile?: boolean;
+      rows: Array<Record<string, unknown>>;
+    },
+  ) {
+    const projects = await this.projectRepo.find({ where: { companyId } });
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const byName = new Map(projects.map((p) => [p.name.trim(), p]));
+
+    const success: { row: number; roomNo: string; customerId: number }[] = [];
+    const failed: { row: number; roomNo?: string; reason: string }[] = [];
+
+    for (let i = 0; i < input.rows.length; i++) {
+      const raw = input.rows[i];
+      const rowNo = i + 2; // 模板含表头，Excel 行号从 2 起
+      try {
+        const mapped = this.mapImportRow(raw);
+        if (!mapped.roomNo && !mapped.name && !mapped.phone) continue; // 空行跳过
+
+        let projectId = mapped.projectId ?? input.defaultProjectId;
+        if (!projectId && mapped.projectName) {
+          projectId = byName.get(mapped.projectName.trim())?.id;
+        }
+        if (!projectId || !byId.has(projectId)) {
+          throw new Error('项目不存在，请填写项目编号或准确的项目名称');
+        }
+
+        const created = await this.create({
+          projectId,
+          name: mapped.name,
+          phone: mapped.phone,
+          roomNo: mapped.roomNo,
+          idCard: mapped.idCard,
+          houseArea: mapped.houseArea,
+          feeStartDate: mapped.feeStartDate,
+          contractDate: mapped.contractDate,
+          decorateDate: mapped.decorateDate,
+          houseStatus: mapped.houseStatus,
+          residentType: mapped.residentType,
+          propertyType: mapped.propertyType,
+          paidMonths: mapped.paidMonths,
+        });
+
+        if (input.confirmProfile && created.id) {
+          const customer = await this.customerRepo.findOne({ where: { id: created.id, companyId } });
+          if (customer && !customer.profileConfirmedAt) {
+            customer.profileConfirmedAt = new Date().toISOString();
+            await this.customerRepo.save(customer);
+          }
+        }
+
+        success.push({ row: rowNo, roomNo: mapped.roomNo, customerId: created.id });
+      } catch (e: unknown) {
+        let reason = '导入失败';
+        if (e instanceof BusinessException) {
+          const body = e.getResponse();
+          reason =
+            typeof body === 'object' && body && 'message' in body
+              ? String((body as { message: string }).message)
+              : e.message;
+        } else if (e instanceof Error) {
+          reason = e.message;
+        }
+        failed.push({
+          row: rowNo,
+          roomNo: String(raw['房号'] ?? raw['roomNo'] ?? ''),
+          reason,
+        });
+      }
+    }
+
+    return {
+      total: input.rows.length,
+      successCount: success.length,
+      failedCount: failed.length,
+      success,
+      failed,
+    };
+  }
+
+  private mapImportRow(raw: Record<string, unknown>) {
+    const get = (...keys: string[]) => {
+      for (const k of keys) {
+        if (raw[k] !== undefined && raw[k] !== null && String(raw[k]).trim() !== '') return raw[k];
+      }
+      return undefined;
+    };
+
+    const projectIdRaw = get('项目编号', '项目ID', 'projectId');
+    const projectName = String(get('项目名称', 'projectName') ?? '').trim();
+    const roomNo = String(get('房号', 'roomNo') ?? '').trim();
+    const name = String(get('姓名', 'name') ?? '').trim();
+    const phone = String(get('手机号', '电话', 'phone') ?? '').trim();
+    const idCardRaw = String(get('身份证号', '身份证', 'idCard') ?? '')
+      .trim()
+      .toUpperCase();
+    const idCard = idCardRaw || undefined;
+    const houseArea = Number(get('房屋面积', '面积', 'houseArea') ?? 0);
+    const feeStartDate = this.normalizeImportDate(get('物业费起始日期', '物业费起始时间', 'feeStartDate'));
+    const paidMonths = Number(get('已缴月数', '期初已缴月数', 'paidMonths') ?? 0);
+    const contractDate = this.normalizeImportDate(get('合同日期', '合同签约时间', 'contractDate'), true);
+    const decorateDate = this.normalizeImportDate(get('装修日期', '装修时间', 'decorateDate'), true);
+    const houseStatus = this.parseHouseStatus(String(get('房屋状态', 'houseStatus') ?? '入住'));
+    const residentType = this.parseResidentType(String(get('住户类型', '身份', 'residentType') ?? '业主'));
+    const propertyType = this.parsePropertyType(String(get('房屋性质', '物业类型', 'propertyType') ?? '住房'));
+
+    if (!roomNo || !name || !phone || !houseArea || !feeStartDate) {
+      throw new Error('必填项不完整（房号/姓名/手机号/房屋面积/物业费起始日期；身份证可选）');
+    }
+    if (paidMonths < 0 || !Number.isFinite(paidMonths)) {
+      throw new Error('已缴月数须为 ≥0 的整数');
+    }
+
+    return {
+      projectId: projectIdRaw ? Number(projectIdRaw) : undefined,
+      projectName: projectName || undefined,
+      roomNo,
+      name,
+      phone,
+      idCard,
+      houseArea,
+      feeStartDate,
+      paidMonths: Math.floor(paidMonths),
+      contractDate,
+      decorateDate,
+      houseStatus,
+      residentType,
+      propertyType,
+    };
+  }
+
+  private normalizeImportDate(v: unknown, optional = false): string | undefined {
+    if (v === undefined || v === null || String(v).trim() === '') {
+      if (optional) return undefined;
+      throw new Error('日期不能为空');
+    }
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      // Excel 序列日
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      const d = new Date(epoch.getTime() + v * 86400000);
+      return d.toISOString().slice(0, 10);
+    }
+    const s = String(v).trim().replace(/\//g, '-');
+    if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+    throw new Error(`无法识别的日期：${s}`);
+  }
+
+  private parseHouseStatus(label: string): HouseStatus {
+    const map: Record<string, HouseStatus> = {
+      未交房: HouseStatus.UNDELIVERED,
+      UNDELIVERED: HouseStatus.UNDELIVERED,
+      装修中: HouseStatus.DECORATING,
+      DECORATING: HouseStatus.DECORATING,
+      入住: HouseStatus.OCCUPIED,
+      OCCUPIED: HouseStatus.OCCUPIED,
+      空置: HouseStatus.VACANT,
+      VACANT: HouseStatus.VACANT,
+    };
+    return map[label.trim()] ?? HouseStatus.OCCUPIED;
+  }
+
+  private parseResidentType(label: string): ResidentType {
+    const map: Record<string, ResidentType> = {
+      业主: ResidentType.OWNER,
+      OWNER: ResidentType.OWNER,
+      租户: ResidentType.TENANT,
+      TENANT: ResidentType.TENANT,
+    };
+    return map[label.trim()] ?? ResidentType.OWNER;
+  }
+
+  private parsePropertyType(label: string): PropertyType {
+    const map: Record<string, PropertyType> = {
+      住房: PropertyType.RESIDENTIAL,
+      住宅: PropertyType.RESIDENTIAL,
+      RESIDENTIAL: PropertyType.RESIDENTIAL,
+      商户: PropertyType.COMMERCIAL_L1,
+      门面: PropertyType.COMMERCIAL_L1,
+      商铺: PropertyType.COMMERCIAL_L1,
+      门面一楼: PropertyType.COMMERCIAL_L1,
+      一楼门面: PropertyType.COMMERCIAL_L1,
+      一楼: PropertyType.COMMERCIAL_L1,
+      COMMERCIAL: PropertyType.COMMERCIAL_L1,
+      COMMERCIAL_L1: PropertyType.COMMERCIAL_L1,
+      门面二楼: PropertyType.COMMERCIAL_L2,
+      二楼门面: PropertyType.COMMERCIAL_L2,
+      二楼: PropertyType.COMMERCIAL_L2,
+      COMMERCIAL_L2: PropertyType.COMMERCIAL_L2,
+    };
+    return normalizePropertyType(map[label.trim()] ?? PropertyType.RESIDENTIAL);
   }
 
   /** 分页查询：项目/房号/姓名/手机/身份证盲索引 */
@@ -177,6 +471,7 @@ export class CustomerService {
       phone?: string;
       idCard?: string;
       residentType?: string;
+      propertyType?: string;
       page?: number;
       pageSize?: number;
     },
@@ -200,6 +495,7 @@ export class CustomerService {
       });
     }
     if (query.residentType) qb.andWhere('c.residentType = :residentType', { residentType: query.residentType });
+    if (query.propertyType) qb.andWhere('c.propertyType = :propertyType', { propertyType: query.propertyType });
     const [list, total] = await qb.getManyAndCount();
     const projectIds = [...new Set(list.map((c) => c.projectId))];
     const projects = projectIds.length ? await this.projectRepo.find({ where: { id: In(projectIds) } }) : [];
@@ -235,7 +531,9 @@ export class CustomerService {
         id: person.id,
         name: person.name,
         phoneMasked: CryptoService.maskPhone(this.crypto.decrypt(person.phoneEncrypted)),
-        idCardMasked: CryptoService.maskIdCard(this.crypto.decrypt(person.idCardEncrypted)),
+        idCardMasked: person.idCardEncrypted
+          ? CryptoService.maskIdCard(this.crypto.decrypt(person.idCardEncrypted))
+          : '',
       },
       properties: active.map((c) => this.toSummary(c, projectNameMap.get(c.projectId))),
     };
@@ -292,7 +590,7 @@ export class CustomerService {
         companyId,
         customerId: id,
         operatorId: userId,
-        fieldName: 'profileConfirmed',
+        fieldName: '档案确认',
         oldValue: '',
         newValue: customer.profileConfirmedAt,
         changedAt: customer.profileConfirmedAt,
@@ -315,7 +613,7 @@ export class CustomerService {
         companyId,
         customerId: id,
         operatorId: userId,
-        fieldName: 'profileUnlock',
+        fieldName: '档案解锁',
         oldValue: '',
         newValue: until,
         changedAt: new Date().toISOString(),
@@ -325,7 +623,10 @@ export class CustomerService {
     return this.toView(customer, project?.name);
   }
 
-  /** 房屋转售：换绑业主身份，台账/收据仍挂本房源 customerId */
+  /**
+   * 房屋转售：仅换绑业主身份（姓名/手机/证件），台账/收据仍挂本房源 customerId。
+   * 不改变房屋状态、交房日期、物业费起算；未交房也可更正业主信息，但不会因此变成已交房。
+   */
   async resale(
     companyId: number,
     userId: number,
@@ -333,7 +634,7 @@ export class CustomerService {
     input: {
       name: string;
       phone: string;
-      idCard: string;
+      idCard?: string;
       residentType?: ResidentType;
       contractDate?: string;
       remark?: string;
@@ -341,14 +642,14 @@ export class CustomerService {
   ) {
     const customer = await this.getOrThrow(companyId, id);
     const fromName = customer.name;
-    const fromIdCardMasked = CryptoService.maskIdCard(this.crypto.decrypt(customer.idCardEncrypted));
+    const fromIdCardMasked = this.maskIdCardSafe(customer.idCardEncrypted);
     const fromPersonId = customer.personId;
     const person = await this.ensurePerson(companyId, {
       name: input.name,
       phone: input.phone,
       idCard: input.idCard,
     });
-    const idCard = input.idCard.trim().toUpperCase();
+    const toIdCardMasked = this.maskIdCardSafe(person.idCardEncrypted);
     await this.ownershipRepo.save(
       this.ownershipRepo.create({
         companyId,
@@ -358,7 +659,7 @@ export class CustomerService {
         fromName,
         fromIdCardMasked,
         toName: person.name,
-        toIdCardMasked: CryptoService.maskIdCard(idCard),
+        toIdCardMasked,
         transferredAt: new Date().toISOString(),
         operatorId: userId,
         remark: input.remark,
@@ -381,7 +682,7 @@ export class CustomerService {
         companyId,
         customerId: id,
         operatorId: userId,
-        fieldName: 'resale',
+        fieldName: '房屋转售',
         oldValue: fromName,
         newValue: person.name,
         changedAt: new Date().toISOString(),
@@ -472,7 +773,13 @@ export class CustomerService {
         customer.phoneBlindIndex = this.crypto.blindIndex(phone);
       },
       idCard: (v) => {
-        const idCard = String(v).trim().toUpperCase();
+        const idCard = String(v ?? '').trim().toUpperCase();
+        if (!idCard) {
+          trackable['idCard'] = '';
+          customer.idCardEncrypted = undefined;
+          customer.idCardBlindIndex = undefined;
+          return;
+        }
         if (!isValidIdCard(idCard)) throw new BusinessException(ErrorCodes.ID_CARD_INVALID);
         trackable['idCard'] = idCard;
         customer.idCardEncrypted = this.crypto.encrypt(idCard);
@@ -485,6 +792,11 @@ export class CustomerService {
         }
         trackable['residentType'] = type;
         customer.residentType = type;
+      },
+      propertyType: (v) => {
+        const type = normalizePropertyType(String(v));
+        trackable['propertyType'] = type;
+        customer.propertyType = type;
       },
       houseArea: (v) => {
         const area = Number(v);
@@ -509,8 +821,9 @@ export class CustomerService {
     const oldSnapshot: Record<string, unknown> = {
       name: customer.name,
       phone: CryptoService.maskPhone(this.crypto.decrypt(customer.phoneEncrypted)),
-      idCard: CryptoService.maskIdCard(this.crypto.decrypt(customer.idCardEncrypted)),
+      idCard: this.maskIdCardSafe(customer.idCardEncrypted),
       residentType: customer.residentType,
+      propertyType: normalizePropertyType(customer.propertyType),
       houseArea: customer.houseArea / 100,
       contractDate: customer.contractDate,
       feeStartDate: customer.feeStartDate,
@@ -523,9 +836,9 @@ export class CustomerService {
       if (handler) handler(value);
     }
 
-    // 身份证变更时重建/关联自然人身份
-    if (trackable['idCard'] || trackable['name'] || trackable['phone']) {
-      const plainIdCard = this.crypto.decrypt(customer.idCardEncrypted);
+    // 身份信息变更时重建/关联自然人（以手机号为主键）
+    if (trackable['idCard'] !== undefined || trackable['name'] || trackable['phone'] || trackable['propertyType']) {
+      const plainIdCard = customer.idCardEncrypted ? this.crypto.decrypt(customer.idCardEncrypted) : undefined;
       const plainPhone = this.crypto.decrypt(customer.phoneEncrypted);
       const person = await this.ensurePerson(companyId, {
         name: customer.name,
@@ -550,8 +863,9 @@ export class CustomerService {
     const newSnapshot: Record<string, unknown> = {
       name: customer.name,
       phone: CryptoService.maskPhone(this.crypto.decrypt(customer.phoneEncrypted)),
-      idCard: CryptoService.maskIdCard(this.crypto.decrypt(customer.idCardEncrypted)),
+      idCard: this.maskIdCardSafe(customer.idCardEncrypted),
       residentType: customer.residentType,
+      propertyType: normalizePropertyType(customer.propertyType),
       houseArea: customer.houseArea / 100,
       contractDate: customer.contractDate,
       feeStartDate: customer.feeStartDate,
@@ -575,11 +889,22 @@ export class CustomerService {
     return this.toView(customer, project?.name);
   }
 
-  async transitionStatus(companyId: number, customerId: number, target: HouseStatus): Promise<CustomerEntity> {
+  async transitionStatus(
+    companyId: number,
+    userId: number,
+    customerId: number,
+    target: HouseStatus,
+  ): Promise<CustomerEntity> {
     const customer = await this.getOrThrow(companyId, customerId);
     const current = customer.houseStatus as HouseStatus;
     if (current === HouseStatus.UNDELIVERED) {
       throw new BusinessException(ErrorCodes.STATUS_TRANSITION_INVALID, '未交房状态仅能通过交房缴费事务变更为已交房');
+    }
+    if (target === HouseStatus.UNDELIVERED || target === HouseStatus.DELIVERED) {
+      throw new BusinessException(
+        ErrorCodes.STATUS_TRANSITION_INVALID,
+        '已交房/未交房不可手工互转；未交房→已交房须走交房缴费',
+      );
     }
     const allowed = HouseStatusTransitionMatrix[current] ?? [];
     if (!allowed.includes(target)) {
@@ -587,6 +912,17 @@ export class CustomerService {
     }
     customer.houseStatus = target;
     await this.customerRepo.save(customer);
+    await this.changeLogRepo.save(
+      this.changeLogRepo.create({
+        companyId,
+        customerId,
+        operatorId: userId,
+        fieldName: '房屋状态',
+        oldValue: current,
+        newValue: target,
+        changedAt: new Date().toISOString(),
+      }),
+    );
     return customer;
   }
 
@@ -666,11 +1002,12 @@ export class CustomerService {
     let count = 0;
     for (const c of orphans) {
       try {
-        const idCard = this.crypto.decrypt(c.idCardEncrypted);
+        const idCard = c.idCardEncrypted ? this.crypto.decrypt(c.idCardEncrypted) : undefined;
         const phone = this.crypto.decrypt(c.phoneEncrypted);
         const person = await this.ensurePerson(c.companyId, { name: c.name, phone, idCard });
         c.personId = person.id;
         if (!c.residentType) c.residentType = ResidentType.OWNER;
+        if (!c.propertyType) c.propertyType = PropertyType.RESIDENTIAL;
         await this.customerRepo.save(c);
         count += 1;
       } catch {
@@ -699,6 +1036,15 @@ export class CustomerService {
     return result;
   }
 
+  private maskIdCardSafe(encrypted?: string | null): string {
+    if (!encrypted) return '';
+    try {
+      return CryptoService.maskIdCard(this.crypto.decrypt(encrypted));
+    } catch {
+      return '';
+    }
+  }
+
   toSummary(c: CustomerEntity, projectName?: string) {
     return {
       id: c.id,
@@ -710,7 +1056,8 @@ export class CustomerService {
       projectId: c.projectId,
       projectName: projectName ?? '',
       residentType: c.residentType ?? ResidentType.OWNER,
-      idCardMasked: CryptoService.maskIdCard(this.crypto.decrypt(c.idCardEncrypted)),
+      propertyType: normalizePropertyType(c.propertyType),
+      idCardMasked: this.maskIdCardSafe(c.idCardEncrypted),
     };
   }
 
@@ -722,10 +1069,11 @@ export class CustomerService {
       projectId: c.projectId,
       projectName: projectName ?? '',
       residentType: c.residentType ?? ResidentType.OWNER,
+      propertyType: normalizePropertyType(c.propertyType),
       name: c.name,
       roomNo: c.roomNo,
       phoneMasked: CryptoService.maskPhone(this.crypto.decrypt(c.phoneEncrypted)),
-      idCardMasked: CryptoService.maskIdCard(this.crypto.decrypt(c.idCardEncrypted)),
+      idCardMasked: this.maskIdCardSafe(c.idCardEncrypted),
       houseAreaFen: c.houseArea,
       houseStatus: c.houseStatus,
       contractDate: c.contractDate,

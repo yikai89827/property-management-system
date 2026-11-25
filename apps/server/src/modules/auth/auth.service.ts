@@ -38,6 +38,8 @@ export class AuthService {
     if (user.status !== 'active') {
       throw new BusinessException(ErrorCodes.ACCOUNT_DISABLED, undefined, 401);
     }
+    user.lastLoginAt = new Date().toISOString();
+    await this.userRepo.save(user);
     return this.issueStaffTokens(user);
   }
 
