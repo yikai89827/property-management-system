@@ -33,6 +33,15 @@ class UpdateUserDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  /** 留空表示不改密码；填写则至少 6 位 */
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @IsOptional()
+  @IsArray()
+  roleCodes?: string[];
 }
 
 class CreateRoleDto {

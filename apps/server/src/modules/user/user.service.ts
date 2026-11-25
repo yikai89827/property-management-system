@@ -67,11 +67,26 @@ export class UserService {
     return user;
   }
 
-  /** 修改账号；PATCH 停用即离职生效路径（记录 disabled_at） */
-  async updateUser(companyId: number, userId: number, patch: { realName?: string; status?: string }) {
+  /** 修改账号信息；PATCH 停用即离职生效路径（记录 disabled_at） */
+  async updateUser(
+    companyId: number,
+    userId: number,
+    patch: { realName?: string; status?: string; password?: string; roleCodes?: string[] },
+  ) {
     const user = await this.userRepo.findOne({ where: { id: userId, companyId } });
     if (!user) throw new BadRequestException('用户不存在');
-    if (patch.realName) user.realName = patch.realName;
+    if (patch.realName !== undefined) {
+      const name = patch.realName.trim();
+      if (!name) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '姓名不能为空');
+      user.realName = name;
+    }
+    if (patch.password !== undefined && patch.password !== '') {
+      if (patch.password.length < 6) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '密码至少 6 位');
+      }
+      const { hashPassword } = await import('../../database/seeds/seed.service');
+      user.passwordHash = hashPassword(patch.password);
+    }
     if (patch.status === 'disabled') {
       user.status = 'disabled';
       user.disabledAt = new Date().toISOString();
@@ -80,7 +95,18 @@ export class UserService {
       user.disabledAt = undefined;
     }
     await this.userRepo.save(user);
+    if (patch.roleCodes !== undefined) {
+      if (patch.roleCodes.length === 0) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '至少保留一个角色');
+      }
+      await this.replaceRoles(companyId, userId, patch.roleCodes);
+    }
     return user;
+  }
+
+  private async replaceRoles(companyId: number, userId: number, roleCodes: string[]) {
+    await this.userRoleRepo.delete({ companyId, userId });
+    await this.assignRoles(companyId, userId, roleCodes);
   }
 
   async listRoles(companyId: number) {

@@ -19,8 +19,10 @@
           <el-table-column label="数据范围">
             <template #default="{ row }">{{ row.allProjectsScope ? '全部项目' : `授权 ${row.projectScopes?.length ?? 0} 个项目` }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="160">
+          <el-table-column label="操作" width="320">
             <template #default="{ row }">
+              <el-button link type="primary" @click="openEditUser(row)">编辑</el-button>
+              <el-button link type="warning" @click="openResetPassword(row)">重置密码</el-button>
               <el-button link type="primary" @click="openPermissions(row)">配置权限</el-button>
               <el-popconfirm :title="row.status === 'active' ? '停用后该账号登录态立即失效（离职生效路径）' : '恢复该账号？'" @confirm="toggleUser(row)">
                 <template #reference>
@@ -63,26 +65,61 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="userDialogVisible" title="新建员工账号" width="480">
+    <el-dialog v-model="userDialogVisible" :title="editingUserId ? '编辑账户信息' : '新建员工账号'" width="480">
       <el-form :model="userForm" label-width="100px">
         <el-form-item label="用户名" required>
-          <el-input v-model="userForm.username" />
+          <el-input v-model="userForm.username" :disabled="!!editingUserId" placeholder="登录账号，创建后不可改" />
         </el-form-item>
-        <el-form-item label="初始密码" required>
-          <el-input v-model="userForm.password" type="password" />
+        <el-form-item :label="editingUserId ? '新密码' : '初始密码'" :required="!editingUserId">
+          <el-input
+            v-model="userForm.password"
+            type="password"
+            show-password
+            :placeholder="editingUserId ? '留空则不修改密码' : '至少 6 位'"
+          />
         </el-form-item>
         <el-form-item label="姓名" required>
-          <el-input v-model="userForm.realName" />
+          <el-input v-model="userForm.realName" maxlength="50" show-word-limit />
         </el-form-item>
         <el-form-item label="角色" required>
-          <el-select v-model="userForm.roleCodes" multiple style="width: 100%">
+          <el-select v-model="userForm.roleCodes" multiple style="width: 100%" placeholder="请选择角色">
             <el-option v-for="r in roles" :key="r.code" :label="r.name" :value="r.code" />
           </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="userDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="createUser">创建</el-button>
+        <el-button type="primary" @click="editingUserId ? saveEditUser() : createUser()">
+          {{ editingUserId ? '保存' : '创建' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="resetPwdVisible" title="重置密码" width="420">
+      <p class="reset-tip">账号：{{ resetTarget?.username }}（{{ resetTarget?.realName }}）</p>
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="新密码" required>
+          <el-input
+            v-model="resetPassword"
+            type="password"
+            show-password
+            placeholder="至少 6 位"
+            maxlength="64"
+          />
+        </el-form-item>
+        <el-form-item label="确认密码" required>
+          <el-input
+            v-model="resetPasswordConfirm"
+            type="password"
+            show-password
+            placeholder="再次输入新密码"
+            maxlength="64"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resetPwdVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitResetPassword">确认重置</el-button>
       </template>
     </el-dialog>
 
@@ -124,6 +161,11 @@ const roles = ref<Record<string, any>[]>([]);
 const auditLogs = ref<Record<string, any>[]>([]);
 const projects = ref<{ id: number; name: string }[]>([]);
 const userDialogVisible = ref(false);
+const editingUserId = ref<number | null>(null);
+const resetPwdVisible = ref(false);
+const resetTarget = ref<Record<string, any> | null>(null);
+const resetPassword = ref('');
+const resetPasswordConfirm = ref('');
 const permDrawerVisible = ref(false);
 const userForm = reactive({ username: '', password: '', realName: '', roleCodes: [] as string[] });
 const editingUser = ref<Record<string, any> | null>(null);
@@ -149,7 +191,22 @@ async function load() {
 }
 
 function openCreateUser() {
+  editingUserId.value = null;
   Object.assign(userForm, { username: '', password: '', realName: '', roleCodes: [] });
+  userDialogVisible.value = true;
+}
+
+function openEditUser(row: Record<string, any>) {
+  editingUserId.value = row.id;
+  const roleCodes = (row.roles ?? [])
+    .map((r: string | { code?: string }) => (typeof r === 'string' ? r : r.code))
+    .filter(Boolean) as string[];
+  Object.assign(userForm, {
+    username: row.username ?? '',
+    password: '',
+    realName: row.realName ?? '',
+    roleCodes,
+  });
   userDialogVisible.value = true;
 }
 
@@ -164,10 +221,59 @@ async function createUser() {
   await load();
 }
 
+async function saveEditUser() {
+  if (!editingUserId.value) return;
+  if (!userForm.realName?.trim()) {
+    ElMessage.warning('姓名不能为空');
+    return;
+  }
+  if (userForm.roleCodes.length === 0) {
+    ElMessage.warning('至少选择一个角色');
+    return;
+  }
+  if (userForm.password && userForm.password.length < 6) {
+    ElMessage.warning('新密码至少 6 位');
+    return;
+  }
+  const payload: Record<string, unknown> = {
+    realName: userForm.realName.trim(),
+    roleCodes: userForm.roleCodes,
+  };
+  if (userForm.password) payload.password = userForm.password;
+  await http.patch(`/users/${editingUserId.value}`, payload);
+  ElMessage.success('账户信息已更新');
+  userDialogVisible.value = false;
+  editingUserId.value = null;
+  await load();
+}
+
 async function toggleUser(row: Record<string, any>) {
   await http.patch(`/users/${row.id}`, { status: row.status === 'active' ? 'disabled' : 'active' });
   ElMessage.success(row.status === 'active' ? '已停用（该账号登录态立即失效）' : '已启用');
   await load();
+}
+
+function openResetPassword(row: Record<string, any>) {
+  resetTarget.value = row;
+  resetPassword.value = '';
+  resetPasswordConfirm.value = '';
+  resetPwdVisible.value = true;
+}
+
+async function submitResetPassword() {
+  if (!resetTarget.value) return;
+  if (!resetPassword.value || resetPassword.value.length < 6) {
+    ElMessage.warning('新密码至少 6 位');
+    return;
+  }
+  if (resetPassword.value !== resetPasswordConfirm.value) {
+    ElMessage.warning('两次输入的密码不一致');
+    return;
+  }
+  await http.patch(`/users/${resetTarget.value.id}`, { password: resetPassword.value });
+  ElMessage.success('密码已重置');
+  resetPwdVisible.value = false;
+  resetTarget.value = null;
 }
 
 async function openPermissions(row: Record<string, any>) {
@@ -211,4 +317,9 @@ onMounted(load);
 
 <style scoped>
 .audit-content { font-size: 12px; color: #606266; }
+.reset-tip {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
 </style>
