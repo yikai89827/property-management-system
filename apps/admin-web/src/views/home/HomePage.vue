@@ -121,11 +121,20 @@ import * as echarts from 'echarts/core';
 import { BarChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
-import { BuiltInRoles, PermissionCodes } from '@pms/shared';
+import { BuiltInRoles, FEE_ITEM_LABELS, FeeItemCode, PermissionCodes } from '@pms/shared';
 import { http } from '@/api/request';
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
 import FinanceWorkbench from './FinanceWorkbench.vue';
+
+function feeCategoryLabel(code: string, fallback?: string) {
+  if (fallback) return fallback;
+  if (code?.startsWith('OTHER:')) {
+    const raw = code.slice(6);
+    return `其他·${FEE_ITEM_LABELS[raw as FeeItemCode] ?? raw}`;
+  }
+  return FEE_ITEM_LABELS[code as FeeItemCode] ?? code;
+}
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -143,7 +152,7 @@ const loading = ref(false);
 const year = String(new Date().getFullYear());
 const monthSummary = ref({ receivableAmount: 0, receivedAmount: 0, discountAmount: 0, orderCount: 0 });
 const yearMonths = ref<{ month: string; summary: { receivedAmount: number; receivableAmount: number } }[]>([]);
-const categoryRows = ref<{ category: string; receivedAmount: number }[]>([]);
+const categoryRows = ref<{ category: string; categoryLabel?: string; receivedAmount: number }[]>([]);
 const arrearsTop = ref<Record<string, any>[]>([]);
 const arrearsTotalAmount = ref(0);
 const arrearsCount = ref(0);
@@ -299,7 +308,10 @@ function renderCategory() {
   const colors = chartColors();
   const data = categoryRows.value
     .filter((c) => c.receivedAmount > 0)
-    .map((c) => ({ name: c.category, value: Number((c.receivedAmount / 100).toFixed(2)) }));
+    .map((c) => ({
+      name: feeCategoryLabel(c.category, c.categoryLabel),
+      value: Number((c.receivedAmount / 100).toFixed(2)),
+    }));
   categoryChart.setOption({
     tooltip: { trigger: 'item', formatter: '{b}: ¥{c} ({d}%)' },
     legend: { bottom: 0, textStyle: { color: colors.text } },
@@ -325,24 +337,33 @@ function renderCharts() {
 
 async function loadBoss() {
   const { startTime, endTime } = monthRange();
-  const [monthly, yearly, category, arrears] = await Promise.all([
+  const [monthlyRes, yearlyRes, categoryRes, arrearsRes] = await Promise.allSettled([
     http.get<never, Record<string, number>>('/statistics/monthly', { params: { startTime, endTime } }),
     http.get<never, { months: typeof yearMonths.value }>(`/statistics/yearly`, { params: { year } }),
     http.get<never, { category: string; receivedAmount: number }[]>('/statistics/category', { params: { startTime, endTime } }),
     http.get<never, Record<string, any>[]>('/statistics/arrears'),
   ]);
-  monthSummary.value = {
-    receivableAmount: monthly.receivableAmount ?? 0,
-    receivedAmount: monthly.receivedAmount ?? 0,
-    discountAmount: monthly.discountAmount ?? 0,
-    orderCount: monthly.orderCount ?? 0,
-  };
-  yearMonths.value = yearly.months ?? [];
-  categoryRows.value = category ?? [];
-  const list = Array.isArray(arrears) ? arrears : [];
-  arrearsCount.value = list.length;
-  arrearsTotalAmount.value = list.reduce((s, r) => s + (r.arrearsAmount ?? 0), 0);
-  arrearsTop.value = [...list].sort((a, b) => (b.arrearsAmount ?? 0) - (a.arrearsAmount ?? 0)).slice(0, 8);
+  if (monthlyRes.status === 'fulfilled') {
+    const monthly = monthlyRes.value;
+    monthSummary.value = {
+      receivableAmount: monthly.receivableAmount ?? 0,
+      receivedAmount: monthly.receivedAmount ?? 0,
+      discountAmount: monthly.discountAmount ?? 0,
+      orderCount: monthly.orderCount ?? 0,
+    };
+  }
+  if (yearlyRes.status === 'fulfilled') {
+    yearMonths.value = yearlyRes.value.months ?? [];
+  }
+  if (categoryRes.status === 'fulfilled') {
+    categoryRows.value = categoryRes.value ?? [];
+  }
+  if (arrearsRes.status === 'fulfilled') {
+    const list = Array.isArray(arrearsRes.value) ? arrearsRes.value : [];
+    arrearsCount.value = list.length;
+    arrearsTotalAmount.value = list.reduce((s, r) => s + (r.arrearsAmount ?? 0), 0);
+    arrearsTop.value = [...list].sort((a, b) => (b.arrearsAmount ?? 0) - (a.arrearsAmount ?? 0)).slice(0, 8);
+  }
 }
 
 async function loadOps() {

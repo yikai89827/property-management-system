@@ -126,19 +126,25 @@
         </el-card>
 
         <el-card style="margin-top: 16px">
-          <template #header>3. 装修报备（空置优惠资格）</template>
+          <template #header>3. 装修报备</template>
           <el-alert
             v-if="detail.vacantEligible"
             type="success"
             :closable="false"
-            title="当前有有效装修报备，可在交房/续费时选择空置房优惠"
+            title="当前为未交房/未装修：可享空置房优惠；装修报备后将变为已装修并取消空置优惠"
             style="margin-bottom: 12px"
           />
           <el-alert
             v-else
-            type="info"
+            type="warning"
             :closable="false"
-            title="无有效装修报备时不可使用空置房优惠"
+            title="房屋已装修：不可再享空置房优惠"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            :type="detail.depositDeductAllowed ? 'success' : 'info'"
+            :closable="false"
+            :title="detail.depositDeductAllowed ? '已有有效装修报备：允许押金抵扣' : '未装修报备：不可押金抵扣'"
             style="margin-bottom: 12px"
           />
           <el-form inline>
@@ -266,12 +272,12 @@ import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   HOUSE_STATUS_LABELS,
+  HouseStatus,
   HouseStatusTransitionMatrix,
   PROPERTY_TYPE_LABELS,
   PropertyType,
   RESIDENT_TYPE_LABELS,
   ResidentType,
-  type HouseStatus,
 } from '@pms/shared';
 import { http } from '@/api/request';
 import { decorateStatusLabel, fieldLabel, formatDateTime } from '@/utils/format';
@@ -288,7 +294,9 @@ const propertyLabels = PROPERTY_TYPE_LABELS;
 const allowedNextStatuses = computed(() => {
   const cur = detail.value?.houseStatus as HouseStatus | undefined;
   if (!cur) return [] as HouseStatus[];
-  return (HouseStatusTransitionMatrix[cur] ?? []).filter((s) => s !== ('UNDELIVERED' as HouseStatus));
+  return (HouseStatusTransitionMatrix[cur] ?? []).filter(
+    (s) => s !== HouseStatus.UNDELIVERED && s !== ('DELIVERED' as HouseStatus),
+  );
 });
 
 const plateProvinces = [

@@ -6,7 +6,9 @@ import {
   FeeParameterCode,
   HouseStatus,
   HouseStatusTransitionMatrix,
+  isVacantDiscountEligible,
   LedgerStatus,
+  normalizeHouseStatus,
   PropertyType,
   normalizePropertyType,
   ResidentType,
@@ -368,7 +370,7 @@ export class CustomerService {
     const paidMonths = Number(get('已缴月数', '期初已缴月数', 'paidMonths') ?? 0);
     const contractDate = this.normalizeImportDate(get('合同日期', '合同签约时间', 'contractDate'), true);
     const decorateDate = this.normalizeImportDate(get('装修日期', '装修时间', 'decorateDate'), true);
-    const houseStatus = this.parseHouseStatus(String(get('房屋状态', 'houseStatus') ?? '入住'));
+    const houseStatus = this.parseHouseStatus(String(get('房屋状态', 'houseStatus') ?? '未装修'));
     const residentType = this.parseResidentType(String(get('住户类型', '身份', 'residentType') ?? '业主'));
     const propertyType = this.parsePropertyType(String(get('房屋性质', '物业类型', 'propertyType') ?? '住房'));
 
@@ -420,14 +422,21 @@ export class CustomerService {
     const map: Record<string, HouseStatus> = {
       未交房: HouseStatus.UNDELIVERED,
       UNDELIVERED: HouseStatus.UNDELIVERED,
-      装修中: HouseStatus.DECORATING,
-      DECORATING: HouseStatus.DECORATING,
-      入住: HouseStatus.OCCUPIED,
-      OCCUPIED: HouseStatus.OCCUPIED,
-      空置: HouseStatus.VACANT,
-      VACANT: HouseStatus.VACANT,
+      未装修: HouseStatus.UNDECORATED,
+      UNDECORATED: HouseStatus.UNDECORATED,
+      已装修: HouseStatus.DECORATED,
+      DECORATED: HouseStatus.DECORATED,
+      已交房: HouseStatus.UNDECORATED,
+      DELIVERED: HouseStatus.UNDECORATED,
+      装修中: HouseStatus.DECORATED,
+      DECORATING: HouseStatus.DECORATED,
+      入住: HouseStatus.DECORATED,
+      已入住: HouseStatus.DECORATED,
+      OCCUPIED: HouseStatus.DECORATED,
+      空置: HouseStatus.UNDECORATED,
+      VACANT: HouseStatus.UNDECORATED,
     };
-    return map[label.trim()] ?? HouseStatus.OCCUPIED;
+    return normalizeHouseStatus(map[label.trim()] ?? HouseStatus.UNDECORATED);
   }
 
   private parseResidentType(label: string): ResidentType {
@@ -573,7 +582,8 @@ export class CustomerService {
       ownershipHistory,
       decorateFilings,
       activeDecorateFiling: activeFiling ?? null,
-      vacantEligible: !!activeFiling,
+      vacantEligible: isVacantDiscountEligible(customer.houseStatus),
+      depositDeductAllowed: !!activeFiling,
     };
   }
 
@@ -729,6 +739,23 @@ export class CustomerService {
       }),
     );
     customer.decorateDate = input.startDate;
+    // 装修报备后：未装修 → 已装修（未交房须先交房缴费）
+    const before = normalizeHouseStatus(customer.houseStatus);
+    if (before === HouseStatus.UNDECORATED) {
+      const from = customer.houseStatus;
+      customer.houseStatus = HouseStatus.DECORATED;
+      await this.changeLogRepo.save(
+        this.changeLogRepo.create({
+          companyId,
+          customerId,
+          operatorId: userId,
+          fieldName: '房屋状态',
+          oldValue: from,
+          newValue: HouseStatus.DECORATED,
+          changedAt: new Date().toISOString(),
+        }),
+      );
+    }
     await this.customerRepo.save(customer);
     return filing;
   }
@@ -742,7 +769,7 @@ export class CustomerService {
     return this.decorateRepo.save(filing);
   }
 
-  /** 是否存在有效装修报备（空置优惠资格） */
+  /** 是否存在有效装修报备（押金抵扣前提） */
   async hasActiveDecorateFiling(companyId: number, customerId: number): Promise<boolean> {
     const n = await this.decorateRepo.count({ where: { companyId, customerId, status: 'active' } });
     return n > 0;
@@ -897,20 +924,22 @@ export class CustomerService {
   ): Promise<CustomerEntity> {
     const customer = await this.getOrThrow(companyId, customerId);
     const current = customer.houseStatus as HouseStatus;
-    if (current === HouseStatus.UNDELIVERED) {
-      throw new BusinessException(ErrorCodes.STATUS_TRANSITION_INVALID, '未交房状态仅能通过交房缴费事务变更为已交房');
-    }
-    if (target === HouseStatus.UNDELIVERED || target === HouseStatus.DELIVERED) {
+    const normalized = normalizeHouseStatus(current);
+    const normalizedTarget = normalizeHouseStatus(target);
+    if (normalized === HouseStatus.UNDELIVERED) {
       throw new BusinessException(
         ErrorCodes.STATUS_TRANSITION_INVALID,
-        '已交房/未交房不可手工互转；未交房→已交房须走交房缴费',
+        '未交房状态仅能通过交房缴费变更为未装修',
       );
     }
-    const allowed = HouseStatusTransitionMatrix[current] ?? [];
-    if (!allowed.includes(target)) {
+    if (normalizedTarget === HouseStatus.UNDELIVERED) {
+      throw new BusinessException(ErrorCodes.STATUS_TRANSITION_INVALID, '不可手工改回未交房');
+    }
+    const allowed = (HouseStatusTransitionMatrix[normalized] ?? []).map(normalizeHouseStatus);
+    if (!allowed.includes(normalizedTarget)) {
       throw new BusinessException(ErrorCodes.STATUS_TRANSITION_INVALID);
     }
-    customer.houseStatus = target;
+    customer.houseStatus = normalizedTarget;
     await this.customerRepo.save(customer);
     await this.changeLogRepo.save(
       this.changeLogRepo.create({

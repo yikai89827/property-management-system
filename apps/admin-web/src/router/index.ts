@@ -10,27 +10,50 @@ const staticRoutes: RouteRecordRaw[] = [
   },
 ];
 
+/** 菜单图标名（与 @element-plus/icons-vue 导出一致） */
+export type MenuIconName =
+  | 'HomeFilled'
+  | 'OfficeBuilding'
+  | 'User'
+  | 'Key'
+  | 'Wallet'
+  | 'Coin'
+  | 'Tickets'
+  | 'CircleCheck'
+  | 'DataAnalysis'
+  | 'Lock'
+  | 'Setting'
+  | 'List'
+  | 'Avatar'
+  | 'Present';
+
 /** 权限路由注册表：路由 → 所需权限点 */
-const permissionRoutes: { path: string; component: () => Promise<unknown>; permission: string; title: string }[] = [
-  { path: '/home', component: () => import('@/views/home/HomePage.vue'), permission: '', title: '首页' },
-  { path: '/projects', component: () => import('@/views/project/ProjectListPage.vue'), permission: PermissionCodes.PROJECT_VIEW, title: '项目管理' },
-  { path: '/customers', component: () => import('@/views/customer/CustomerListPage.vue'), permission: PermissionCodes.CUSTOMER_VIEW, title: '客户档案' },
-  { path: '/customers/:id', component: () => import('@/views/customer/CustomerDetailPage.vue'), permission: PermissionCodes.CUSTOMER_VIEW, title: '客户详情' },
-  { path: '/charging/delivery', component: () => import('@/views/charging/DeliveryChargePage.vue'), permission: PermissionCodes.CHARGE_DELIVERY_EXECUTE, title: '交房缴费' },
-  { path: '/charging/property', component: () => import('@/views/charging/PropertyChargePage.vue'), permission: PermissionCodes.CHARGE_PROPERTY_EXECUTE, title: '物业费续费' },
-  { path: '/charging/other', component: () => import('@/views/charging/OtherChargePage.vue'), permission: PermissionCodes.CHARGE_OTHER_EXECUTE, title: '其他缴费' },
-  { path: '/charging/receipts', component: () => import('@/views/charging/ReceiptListPage.vue'), permission: PermissionCodes.CHARGE_RECEIPT_VIEW, title: '收款单查询' },
-  { path: '/payment-confirm', component: () => import('@/views/payment/PaymentConfirmPage.vue'), permission: PermissionCodes.PAYMENT_RECORD_CONFIRM, title: '收款确认' },
-  { path: '/statistics', component: () => import('@/views/statistics/StatisticsPage.vue'), permission: PermissionCodes.STATISTIC_MONTHLY_VIEW, title: '统计报表' },
-  { path: '/permission', component: () => import('@/views/permission/PermissionManagePage.vue'), permission: PermissionCodes.USER_MANAGE, title: '权限管理' },
-  { path: '/settings', component: () => import('@/views/settings/SettingsPage.vue'), permission: PermissionCodes.FEE_PARAMETER_MANAGE, title: '系统配置' },
+const permissionRoutes: {
+  path: string;
+  component: () => Promise<unknown>;
+  permission: string;
+  title: string;
+  icon?: MenuIconName;
+}[] = [
+  { path: '/home', component: () => import('@/views/home/HomePage.vue'), permission: '', title: '首页', icon: 'HomeFilled' },
+  { path: '/projects', component: () => import('@/views/project/ProjectListPage.vue'), permission: PermissionCodes.PROJECT_VIEW, title: '项目管理', icon: 'OfficeBuilding' },
+  { path: '/customers', component: () => import('@/views/customer/CustomerListPage.vue'), permission: PermissionCodes.CUSTOMER_VIEW, title: '客户档案', icon: 'User' },
+  { path: '/customers/:id', component: () => import('@/views/customer/CustomerDetailPage.vue'), permission: PermissionCodes.CUSTOMER_VIEW, title: '客户详情', icon: 'User' },
+  { path: '/charging/delivery', component: () => import('@/views/charging/DeliveryChargePage.vue'), permission: PermissionCodes.CHARGE_DELIVERY_EXECUTE, title: '交房缴费', icon: 'Key' },
+  { path: '/charging/property', component: () => import('@/views/charging/PropertyChargePage.vue'), permission: PermissionCodes.CHARGE_PROPERTY_EXECUTE, title: '物业费续费', icon: 'Wallet' },
+  { path: '/charging/other', component: () => import('@/views/charging/OtherChargePage.vue'), permission: PermissionCodes.CHARGE_OTHER_EXECUTE, title: '其他缴费', icon: 'Coin' },
+  { path: '/charging/receipts', component: () => import('@/views/charging/ReceiptListPage.vue'), permission: PermissionCodes.CHARGE_RECEIPT_VIEW, title: '收款单查询', icon: 'Tickets' },
+  { path: '/payment-confirm', component: () => import('@/views/payment/PaymentConfirmPage.vue'), permission: PermissionCodes.PAYMENT_RECORD_CONFIRM, title: '收款确认', icon: 'CircleCheck' },
+  { path: '/statistics', component: () => import('@/views/statistics/StatisticsPage.vue'), permission: PermissionCodes.STATISTIC_MONTHLY_VIEW, title: '统计报表', icon: 'DataAnalysis' },
+  { path: '/permission', component: () => import('@/views/permission/PermissionManagePage.vue'), permission: PermissionCodes.USER_MANAGE, title: '权限管理', icon: 'Lock' },
+  { path: '/settings', component: () => import('@/views/settings/SettingsPage.vue'), permission: PermissionCodes.FEE_PARAMETER_MANAGE, title: '系统配置', icon: 'Setting' },
 ];
 
 /** 二期灰置菜单（不可点击） */
-export const phase2Menus = [
-  { title: '工单管理（二期）' },
-  { title: '人力资源（二期）' },
-  { title: '增值服务（二期）' },
+export const phase2Menus: { title: string; icon: MenuIconName }[] = [
+  { title: '工单管理（二期）', icon: 'List' },
+  { title: '人力资源（二期）', icon: 'Avatar' },
+  { title: '增值服务（二期）', icon: 'Present' },
 ];
 
 export function buildMenus(permissions: string[]) {
@@ -38,8 +61,11 @@ export function buildMenus(permissions: string[]) {
     // 带动态参数的详情页不进侧栏（否则会导航到字面量 `/customers/:id` → NaN）
     .filter((r) => !r.path.includes(':'))
     .filter((r) => !r.permission || permissions.includes(r.permission))
-    .map((r) => ({ path: r.path, title: r.title, phase2: false }));
-  return [...menus, ...phase2Menus.map((m) => ({ ...m, path: '', phase2: true }))];
+    .map((r) => ({ path: r.path, title: r.title, icon: r.icon ?? 'HomeFilled', phase2: false as const }));
+  return [
+    ...menus,
+    ...phase2Menus.map((m) => ({ path: '', title: m.title, icon: m.icon, phase2: true as const })),
+  ];
 }
 
 const router = createRouter({

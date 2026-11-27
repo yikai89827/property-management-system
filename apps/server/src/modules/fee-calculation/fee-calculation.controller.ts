@@ -1,7 +1,12 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsNumber, IsOptional, IsString } from 'class-validator';
-import { ErrorCodes, HOUSE_STATUS_LABELS, PermissionCodes } from '@pms/shared';
+import {
+  ErrorCodes,
+  HOUSE_STATUS_LABELS,
+  isVacantDiscountEligible,
+  PermissionCodes,
+} from '@pms/shared';
 import { RequirePermissions } from '../../common/guards/require-permissions.decorator';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -52,8 +57,14 @@ export class FeeCalculationController {
       customer.propertyType,
     );
     const arrearsMonths = this.feeCalculationService.arrearsMonthsFor(customer, ledgers);
-    const feeItems = this.feeCalculationService.calcDeliveryFees(customer.houseArea, arrearsMonths, ctx);
-    const vacantEligible = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
+    const feeItems = this.feeCalculationService.calcDeliveryFees(
+      customer.houseArea,
+      arrearsMonths,
+      ctx,
+      customer.feeStartDate,
+    );
+    const vacantEligible = isVacantDiscountEligible(customer.houseStatus);
+    const depositDeductAllowed = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
     const feeStartMonth = FeeCalculationService.monthOf(customer.feeStartDate);
     const feeEndMonth = FeeCalculationService.monthOf(new Date().toISOString());
     return {
@@ -63,6 +74,7 @@ export class FeeCalculationController {
         feeStartDate: customer.feeStartDate,
         decorateDate: customer.decorateDate ?? null,
         vacantEligible,
+        depositDeductAllowed,
       },
       arrearsMonths,
       feeStartMonth,
@@ -95,8 +107,22 @@ export class FeeCalculationController {
     const feeStartMonth = this.feeCalculationService.earliestUnpaidMonth(customer.feeStartDate, ledgers);
     const feeEndMonth = FeeCalculationService.addMonths(feeStartMonth, months - 1);
     const unitPrice = ctx.unitPrice;
-    const receivableAmount = Math.round((customer.houseArea * unitPrice) / 100) * months;
-    const vacantEligible = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
+    const propertyItem = this.feeCalculationService.calcPropertyFeeMonthsWithProration(
+      customer.houseArea,
+      feeStartMonth,
+      months,
+      customer.feeStartDate,
+      ctx,
+    );
+    const arrearsItem = this.feeCalculationService.calcPropertyFeeMonthsWithProration(
+      customer.houseArea,
+      feeStartMonth,
+      remainingMonths,
+      customer.feeStartDate,
+      ctx,
+    );
+    const vacantEligible = isVacantDiscountEligible(customer.houseStatus);
+    const depositDeductAllowed = await this.customerService.hasActiveDecorateFiling(this.companyId(), customer.id);
 
     return {
       customer: {
@@ -105,6 +131,7 @@ export class FeeCalculationController {
         feeStartDate: customer.feeStartDate,
         decorateDate: customer.decorateDate ?? null,
         vacantEligible,
+        depositDeductAllowed,
       },
       billingInfo: {
         feeStartMonth,
@@ -115,11 +142,12 @@ export class FeeCalculationController {
         paidMonths,
         remainingMonths,
         arrearsMonths: remainingMonths,
-        arrearsAmount: Math.round((customer.houseArea * unitPrice) / 100) * remainingMonths,
+        arrearsAmount: arrearsItem.amount,
         houseAreaSnapshot: customer.houseArea,
         unitPriceSnapshot: unitPrice,
         months,
-        receivableAmount,
+        receivableAmount: propertyItem.amount,
+        calcBasis: propertyItem.calcBasis,
       },
     };
   }
@@ -140,14 +168,30 @@ export class FeeCalculationController {
       customer.projectId,
       customer.propertyType,
     );
+    const unpaidStart = this.feeCalculationService.earliestUnpaidMonth(
+      customer.feeStartDate,
+      ledgers,
+      new Date(`${asOfMonth}-28T00:00:00Z`),
+    );
+    const arrearsAmount =
+      remainingMonths > 0
+        ? this.feeCalculationService.calcPropertyFeeMonthsWithProration(
+            customer.houseArea,
+            unpaidStart,
+            remainingMonths,
+            customer.feeStartDate,
+            ctx,
+          ).amount
+        : 0;
     return {
+      feeStartDate: customer.feeStartDate,
       feeStartMonth,
       feeEndMonth: asOfMonth,
       totalBillableMonths,
       paidMonths,
       remainingMonths,
       arrearsMonths: remainingMonths,
-      arrearsAmount: Math.round((customer.houseArea * ctx.unitPrice) / 100) * remainingMonths,
+      arrearsAmount,
       unitPrice: ctx.unitPrice,
       propertyType: customer.propertyType ?? 'RESIDENTIAL',
       paidLedgers: ledgers.map((l) => ({ startMonth: l.startMonth, endMonth: l.endMonth, months: l.months, status: l.status })),

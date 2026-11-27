@@ -80,7 +80,7 @@
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑项目' : '新建项目'" width="520">
       <el-form :model="form" label-width="90px">
         <el-form-item label="项目名称" required>
-          <el-input v-model="form.name" maxlength="50" show-word-limit placeholder="如：桌信花园" />
+          <el-input v-model="form.name" maxlength="50" show-word-limit placeholder="如：卓信花园" />
         </el-form-item>
         <el-form-item label="小区地址">
           <el-input v-model="form.address" maxlength="200" placeholder="便于多项目区分" />

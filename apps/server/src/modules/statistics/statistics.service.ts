@@ -61,7 +61,7 @@ export class StatisticsService {
   private categoryLabel(code: string): string {
     if (code.startsWith('OTHER:')) {
       const raw = code.slice(6);
-      return FEE_ITEM_LABELS[raw as FeeItemCode] ?? `其他·${raw}`;
+      return `其他·${FEE_ITEM_LABELS[raw as FeeItemCode] ?? raw}`;
     }
     return FEE_ITEM_LABELS[code as FeeItemCode] ?? code;
   }
@@ -104,7 +104,9 @@ export class StatisticsService {
     for (const o of orders) {
       if (!byProjectMap.has(o.projectId)) byProjectMap.set(o.projectId, []);
       byProjectMap.get(o.projectId)!.push(o);
-      const period = grain === 'day' ? o.createdAt.slice(0, 10) : o.createdAt.slice(0, 7);
+      const at = this.createdAtText(o.createdAt);
+      const period = grain === 'day' ? at.slice(0, 10) : at.slice(0, 7);
+      if (!period) continue;
       if (!byPeriodMap.has(period)) byPeriodMap.set(period, []);
       byPeriodMap.get(period)!.push(o);
     }
@@ -244,21 +246,32 @@ export class StatisticsService {
     return this.summarize(orders);
   }
 
+  /** 把 createdAt（string | Date）规范成可切片的 ISO 字符串 */
+  private createdAtText(value: string | Date | null | undefined): string {
+    if (!value) return '';
+    if (value instanceof Date) return value.toISOString();
+    const s = String(value).trim();
+    // SQLite 常见 "YYYY-MM-DD HH:mm:ss" → 统一成可切片格式
+    return s.includes(' ') ? s.replace(' ', 'T') : s;
+  }
+
   /** 年度统计（各月汇总 + 年度合计） */
   async yearly(companyId: number, year: string, projectIds?: number[]) {
-    const startTime = `${year}-01-01`;
-    const endTime = `${year}-12-31T23:59:59.999Z`;
+    const y = /^\d{4}$/.test(String(year)) ? String(year) : String(new Date().getFullYear());
+    const startTime = `${y}-01-01`;
+    const endTime = `${y}-12-31`;
     const orders = await this.effectiveWhere(companyId, startTime, endTime, projectIds).getMany();
     const byMonth = new Map<string, typeof orders>();
     for (const o of orders) {
-      const month = o.createdAt.slice(0, 7);
+      const month = this.createdAtText(o.createdAt).slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(month)) continue;
       if (!byMonth.has(month)) byMonth.set(month, []);
       byMonth.get(month)!.push(o);
     }
     const months = [...byMonth.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([month, list]) => ({ month, summary: this.summarize(list) }));
-    return { year, months, total: this.summarize(orders) };
+    return { year: y, months, total: this.summarize(orders) };
   }
 
   /** 分类统计（按收费类别：交房缴费各费用项/物业费/其他缴费各字典类别） */
@@ -286,6 +299,7 @@ export class StatisticsService {
     }
     return [...byCategory.entries()].map(([category, v]) => ({
       category,
+      categoryLabel: this.categoryLabel(category),
       receivableAmount: v.receivable,
       receivedAmount: v.received,
       discountAmount: v.discount,
@@ -293,7 +307,10 @@ export class StatisticsService {
     }));
   }
 
-  /** 欠费统计（按项目/房号维度汇总+明细；asOf=YYYY-MM 截止月，默认当月） */
+  /**
+   * 欠费统计：按物业费起始日 → 统计截止月，对照已缴台账推算欠费月数与金额（首月非 1 号按天折算）。
+   * asOf=YYYY-MM 统计截止月，默认当月。
+   */
   async arrears(companyId: number, projectIds?: number[], asOf?: string) {
     const scoped = this.scopedProjectIds(companyId, projectIds);
     const customers = await this.customerRepo.find({ where: { companyId } });
@@ -309,6 +326,10 @@ export class StatisticsService {
       projectName: string;
       roomNo: string;
       customerName: string;
+      feeStartDate: string;
+      feeEndMonth: string;
+      totalBillableMonths: number;
+      paidMonths: number;
       arrearsMonths: number;
       arrearsAmount: number;
       asOfMonth: string;
@@ -324,13 +345,25 @@ export class StatisticsService {
         customerLedgers.length > 0
           ? customerLedgers[customerLedgers.length - 1].unitPriceSnapshot
           : 120;
+      const unpaidStart = this.earliestUnpaidMonth(c.feeStartDate, customerLedgers, asOfMonth);
+      const arrearsAmount = this.calcArrearsAmount(
+        c.houseArea,
+        c.feeStartDate,
+        unpaidStart,
+        arrearsMonths,
+        unitPrice,
+      );
       rows.push({
         projectId: c.projectId,
         projectName: projectMap.get(c.projectId) ?? '',
         roomNo: c.roomNo,
         customerName: c.name,
+        feeStartDate: c.feeStartDate,
+        feeEndMonth: asOfMonth,
+        totalBillableMonths: totalBillable,
+        paidMonths: paid,
         arrearsMonths,
-        arrearsAmount: Math.round((c.houseArea * unitPrice) / 100) * arrearsMonths,
+        arrearsAmount,
         asOfMonth,
       });
     }
@@ -356,24 +389,34 @@ export class StatisticsService {
     // deposit：押金统计 = 交房缴费中押金抵扣前的押金项（按项目维度汇总）
     const byProject = new Map<number, number>();
     for (const o of orders) {
-      const snapshot = JSON.parse(o.payerSnapshot || '{}');
-      const deposit = (snapshot.items ?? []).find((i: { feeItemCode: string }) => i.feeItemCode === 'DEPOSIT_DECORATION');
-      byProject.set(o.projectId, (byProject.get(o.projectId) ?? 0) + (deposit?.amount ?? 0));
+      const snapshot = this.parsePayerSnapshot(o.payerSnapshot);
+      const deposit = (snapshot.items ?? []).find((i) => i.feeItemCode === 'DEPOSIT_DECORATION');
+      byProject.set(o.projectId, (byProject.get(o.projectId) ?? 0) + Number(deposit?.amount ?? 0));
     }
     return [...byProject.entries()].map(([projectId, amount]) => ({ projectId, depositAmount: amount }));
   }
 
+  private parsePayerSnapshot(raw?: string | null): { items?: { feeItemCode: string; amount?: number }[] } {
+    if (!raw) return {};
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
   private summarize(orders: ReceiptOrderEntity[]) {
     return {
-      receivableAmount: orders.reduce((s, o) => s + o.receivableAmount, 0),
-      receivedAmount: orders.reduce((s, o) => s + o.receivedAmount, 0),
-      discountAmount: orders.reduce((s, o) => s + o.discountAmount, 0),
+      receivableAmount: orders.reduce((s, o) => s + Number(o.receivableAmount || 0), 0),
+      receivedAmount: orders.reduce((s, o) => s + Number(o.receivedAmount || 0), 0),
+      discountAmount: orders.reduce((s, o) => s + Number(o.discountAmount || 0), 0),
       depositAmount: orders
         .filter((o) => o.chargeType === ChargeType.DELIVERY)
         .reduce((s, o) => {
-          const snapshot = JSON.parse(o.payerSnapshot || '{}');
-          const deposit = (snapshot.items ?? []).find((i: { feeItemCode: string }) => i.feeItemCode === 'DEPOSIT_DECORATION');
-          return s + (deposit?.amount ?? 0);
+          const snapshot = this.parsePayerSnapshot(o.payerSnapshot);
+          const deposit = (snapshot.items ?? []).find((i) => i.feeItemCode === 'DEPOSIT_DECORATION');
+          return s + Number(deposit?.amount ?? 0);
         }, 0),
       orderCount: orders.length,
     };
@@ -384,7 +427,9 @@ export class StatisticsService {
   }
 
   private monthsFromStartTo(feeStartDate: string, asOfMonth: string): number {
-    const startMonth = feeStartDate.slice(0, 7);
+    if (!feeStartDate || !asOfMonth) return 0;
+    const startMonth = String(feeStartDate).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(asOfMonth)) return 0;
     const [sy, sm] = startMonth.split('-').map(Number);
     const [cy, cm] = asOfMonth.split('-').map(Number);
     return Math.max(0, cy * 12 + cm - (sy * 12 + sm) + 1);
@@ -410,6 +455,67 @@ export class StatisticsService {
       }
     }
     return count;
+  }
+
+  private addMonths(month: string, n: number): string {
+    const [y, m] = month.split('-').map(Number);
+    const total = y * 12 + (m - 1) + n;
+    return `${String(Math.floor(total / 12)).padStart(4, '0')}-${String((total % 12) + 1).padStart(2, '0')}`;
+  }
+
+  private earliestUnpaidMonth(
+    feeStartDate: string,
+    ledgers: PropertyFeeLedgerEntity[],
+    asOfMonth: string,
+  ): string {
+    const startMonth = feeStartDate.slice(0, 7);
+    const covered = new Set<string>();
+    for (const l of ledgers.filter((x) => x.status === 'effective' || x.status === 'pending')) {
+      let cursor = l.startMonth;
+      for (let i = 0; i < l.months; i++) {
+        covered.add(cursor);
+        cursor = this.addMonths(cursor, 1);
+      }
+    }
+    let cursor = startMonth;
+    while (this.monthCmp(cursor, asOfMonth) <= 0) {
+      if (!covered.has(cursor)) return cursor;
+      cursor = this.addMonths(cursor, 1);
+    }
+    return cursor;
+  }
+
+  private monthCmp(a: string, b: string): number {
+    const [ay, am] = a.split('-').map(Number);
+    const [by, bm] = b.split('-').map(Number);
+    return ay * 12 + am - (by * 12 + bm);
+  }
+
+  /** 欠费金额：首月非 1 号按天折算，其余整月全额 */
+  private calcArrearsAmount(
+    areaFen: number,
+    feeStartDate: string,
+    unpaidStartMonth: string,
+    arrearsMonths: number,
+    unitPrice: number,
+  ): number {
+    if (arrearsMonths <= 0) return 0;
+    const monthly = Math.round((areaFen * unitPrice) / 100);
+    const feeStartMonth = feeStartDate.slice(0, 7);
+    const startDay = Number(feeStartDate.slice(8, 10)) || 1;
+    let total = 0;
+    for (let i = 0; i < arrearsMonths; i++) {
+      const month = this.addMonths(unpaidStartMonth, i);
+      if (month === feeStartMonth && startDay > 1) {
+        const [y, m] = month.split('-').map(Number);
+        const dim = new Date(y, m, 0).getDate();
+        const days = dim - startDay + 1;
+        total += Math.round((monthly * days) / dim);
+      } else {
+        total += monthly;
+      }
+    }
+    return total;
   }
 }
 

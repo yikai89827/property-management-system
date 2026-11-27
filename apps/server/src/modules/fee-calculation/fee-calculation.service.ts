@@ -145,7 +145,7 @@ export class FeeCalculationService {
     };
   }
 
-  /** 物业费：面积 × 单价 × 月数（住房 / 门面一楼×2 / 门面二楼×0.7） */
+  /** 物业费：面积 × 单价 × 月数（住房 / 门面一楼×2 / 门面二楼×0.7）；整月口径 */
   calcPropertyFee(areaFen: number, months: number, ctx: ParameterContext): FeeCalcResult {
     const amount = Math.round((areaFen * ctx.unitPrice) / 100) * months;
     const typeLabel = PROPERTY_TYPE_LABELS[ctx.propertyType] ?? '住房';
@@ -163,13 +163,134 @@ export class FeeCalculationService {
     };
   }
 
-  /** 交房四项费用（面积百分位入参，spec 5.3.1 规则 1） */
-  calcDeliveryFees(areaFen: number, arrearsMonths: number, ctx: ParameterContext): FeeCalcResult[] {
+  /** 当月天数 */
+  static daysInMonth(year: number, month1to12: number): number {
+    return new Date(year, month1to12, 0).getDate();
+  }
+
+  /** 月租金（分）= round(面积百分位 × 单价分 / 100) */
+  monthlyPropertyAmount(areaFen: number, ctx: ParameterContext): number {
+    return Math.round((areaFen * ctx.unitPrice) / 100);
+  }
+
+  /**
+   * 按自然日精确计物业费（起止含当日）。
+   * 起始日非 1 号时首月按剩余天数/当月天数折算；截止日非月末时末月按已过天数折算；中间整月全额。
+   */
+  calcPropertyFeeByDateRange(
+    areaFen: number,
+    startDate: string,
+    endDate: string,
+    ctx: ParameterContext,
+  ): FeeCalcResult {
+    const start = FeeCalculationService.parseYmd(startDate);
+    const end = FeeCalculationService.parseYmd(endDate);
+    if (!start || !end || end < start) {
+      return this.calcPropertyFee(areaFen, 0, ctx);
+    }
+    const monthly = this.monthlyPropertyAmount(areaFen, ctx);
+    let amount = 0;
+    const parts: string[] = [];
+    let cursorY = start.y;
+    let cursorM = start.m;
+    while (cursorY < end.y || (cursorY === end.y && cursorM <= end.m)) {
+      const dim = FeeCalculationService.daysInMonth(cursorY, cursorM);
+      const isFirst = cursorY === start.y && cursorM === start.m;
+      const isLast = cursorY === end.y && cursorM === end.m;
+      let fromDay = 1;
+      let toDay = dim;
+      if (isFirst) fromDay = start.d;
+      if (isLast) toDay = end.d;
+      const days = Math.max(0, toDay - fromDay + 1);
+      if (days <= 0) {
+        // skip
+      } else if (days === dim) {
+        amount += monthly;
+        parts.push(`${cursorY}-${String(cursorM).padStart(2, '0')}整月`);
+      } else {
+        const part = Math.round((monthly * days) / dim);
+        amount += part;
+        parts.push(
+          `${cursorY}-${String(cursorM).padStart(2, '0')} ${fromDay}~${toDay}日(${days}/${dim})=${(part / 100).toFixed(2)}元`,
+        );
+      }
+      cursorM += 1;
+      if (cursorM > 12) {
+        cursorM = 1;
+        cursorY += 1;
+      }
+    }
+    const typeLabel = PROPERTY_TYPE_LABELS[ctx.propertyType] ?? '住房';
+    const monthHint = parts.length <= 4 ? parts.join('；') : `${parts[0]} … 共${parts.length}段`;
+    return {
+      feeItemCode: FeeItemCode.PROPERTY_FEE,
+      amount,
+      calcBasis: `${(areaFen / 100).toFixed(2)}㎡ × ${(ctx.unitPrice / 100).toFixed(2)}元/㎡/月（${typeLabel}）按天：${startDate}~${endDate}；${monthHint} = ${(amount / 100).toFixed(2)}元`,
+      parameterSnapshot: this.snapshot(ctx),
+    };
+  }
+
+  /**
+   * 续费/欠费：从某起缴月起缴 N 个整月；若覆盖物业费起始月且起始日非 1 号，首月按天折算。
+   */
+  calcPropertyFeeMonthsWithProration(
+    areaFen: number,
+    startMonth: string,
+    months: number,
+    feeStartDate: string,
+    ctx: ParameterContext,
+  ): FeeCalcResult {
+    if (months <= 0) return this.calcPropertyFee(areaFen, 0, ctx);
+    const endMonth = FeeCalculationService.addMonths(startMonth, months - 1);
+    const feeStartMonth = FeeCalculationService.monthOf(feeStartDate);
+    const startDay = Number(feeStartDate.slice(8, 10)) || 1;
+    const rangeStart =
+      startMonth === feeStartMonth && startDay > 1
+        ? feeStartDate
+        : `${startMonth}-01`;
+    const [ey, em] = endMonth.split('-').map(Number);
+    const rangeEnd = `${endMonth}-${String(FeeCalculationService.daysInMonth(ey, em)).padStart(2, '0')}`;
+    if (startMonth === feeStartMonth && startDay > 1) {
+      return this.calcPropertyFeeByDateRange(areaFen, rangeStart, rangeEnd, ctx);
+    }
+    return this.calcPropertyFee(areaFen, months, ctx);
+  }
+
+  static parseYmd(date: string): { y: number; m: number; d: number } | null {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.slice(0, 10));
+    if (!m) return null;
+    return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+  }
+
+  /** 某月最后一天 YYYY-MM-DD */
+  static lastDayOfMonth(month: string): string {
+    const [y, m] = month.split('-').map(Number);
+    const d = FeeCalculationService.daysInMonth(y, m);
+    return `${month}-${String(d).padStart(2, '0')}`;
+  }
+
+  /** 交房四项费用：物业费按起始日~截止月末按天精确 */
+  calcDeliveryFees(
+    areaFen: number,
+    arrearsMonths: number,
+    ctx: ParameterContext,
+    feeStartDate?: string,
+  ): FeeCalcResult[] {
+    const property =
+      feeStartDate && arrearsMonths > 0
+        ? this.calcPropertyFeeMonthsWithProration(
+            areaFen,
+            FeeCalculationService.monthOf(feeStartDate),
+            arrearsMonths,
+            feeStartDate,
+            ctx,
+          )
+        : this.calcPropertyFee(areaFen, arrearsMonths, ctx);
     return [
       this.calcDepositDeposit(ctx),
       this.calcDecorationMgmt(areaFen, ctx),
       this.calcGarbageTransport(areaFen, ctx),
-      this.calcPropertyFee(areaFen, arrearsMonths, ctx),
+      property,
     ];
   }
 

@@ -106,9 +106,12 @@ const columnMap: Record<StatKind, ColumnDef[]> = {
     { key: '项目', label: '项目', minWidth: 140 },
     { key: '房号', label: '房号', minWidth: 100 },
     { key: '业主', label: '业主', minWidth: 100 },
-    { key: '欠费月数', label: '欠费月数', align: 'right', minWidth: 100 },
-    { key: '欠费金额（元）', label: '欠费金额（元）', align: 'right', minWidth: 130 },
+    { key: '物业费起始', label: '物业费起始', minWidth: 120 },
     { key: '统计截止月', label: '统计截止月', minWidth: 110 },
+    { key: '应计月数', label: '应计月数', align: 'right', minWidth: 90 },
+    { key: '已缴月数', label: '已缴月数', align: 'right', minWidth: 90 },
+    { key: '欠费月数', label: '欠费月数', align: 'right', minWidth: 90 },
+    { key: '欠费金额（元）', label: '欠费金额（元）', align: 'right', minWidth: 130 },
   ],
   receivable: [
     { key: '单据编号', label: '单据编号', minWidth: 160 },
@@ -140,9 +143,9 @@ function yuan(cents: number | undefined | null) {
 
 function categoryLabel(code: string) {
   if (!code) return '—';
-  if (code.startsWith('OTHER:')) {
+  if (code?.startsWith('OTHER:')) {
     const raw = code.slice(6);
-    return FEE_ITEM_LABELS[raw as FeeItemCode] ?? `其他·${raw}`;
+    return `其他·${FEE_ITEM_LABELS[raw as FeeItemCode] ?? raw}`;
   }
   return FEE_ITEM_LABELS[code as FeeItemCode] ?? code;
 }
@@ -181,7 +184,7 @@ function normalizeRows(res: Record<string, any> | Record<string, any>[]): Record
   const list = Array.isArray(res) ? res : [];
   if (kind.value === 'category') {
     return list.map((r) => ({
-      费用类别: categoryLabel(r.category),
+      费用类别: r.categoryLabel || categoryLabel(r.category),
       '应收（元）': yuan(r.receivableAmount),
       '实收（元）': yuan(r.receivedAmount),
       '优惠（元）': yuan(r.discountAmount),
@@ -193,9 +196,12 @@ function normalizeRows(res: Record<string, any> | Record<string, any>[]): Record
       项目: r.projectName ?? '',
       房号: r.roomNo ?? '',
       业主: r.customerName ?? '',
+      物业费起始: r.feeStartDate ?? '',
+      统计截止月: r.feeEndMonth ?? r.asOfMonth ?? asOfMonth.value,
+      应计月数: r.totalBillableMonths ?? 0,
+      已缴月数: r.paidMonths ?? 0,
       欠费月数: r.arrearsMonths ?? 0,
       '欠费金额（元）': yuan(r.arrearsAmount),
-      统计截止月: r.asOfMonth ?? asOfMonth.value,
     }));
   }
   if (kind.value === 'receivable') {

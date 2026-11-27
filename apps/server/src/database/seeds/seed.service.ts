@@ -49,13 +49,96 @@ export class SeedService implements OnModuleInit {
   }
 
   async seed(): Promise<void> {
-    // 1. 默认物业公司
-    const companyName = process.env.DEFAULT_COMPANY_NAME ?? '株洲桌信物业管理有限责任公司';
-    let company = await this.companyRepo.findOne({ where: { name: companyName } });
+    // 1. 默认物业公司（强制纠正「桌信」错字 →「卓信」；重复公司不阻塞启动）
+    const companyName = (process.env.DEFAULT_COMPANY_NAME ?? '株洲卓信物业管理有限责任公司').replace(
+      /桌信/g,
+      '卓信',
+    );
+    const legacyCompanyName = '株洲桌信物业管理有限责任公司';
+    let company =
+      (await this.companyRepo.findOne({ where: { name: companyName } })) ??
+      (await this.companyRepo.findOne({ where: { name: legacyCompanyName } })) ??
+      (await this.companyRepo.findOne({ where: {} }));
     if (!company) {
       company = await this.companyRepo.save(this.companyRepo.create({ name: companyName, status: 'active' }));
       this.logger.log(`seed company: ${companyName}`);
+    } else if (company.name !== companyName) {
+      try {
+        const from = company.name;
+        company.name = companyName;
+        await this.companyRepo.save(company);
+        this.logger.log(`rename company: ${from} → ${companyName}`);
+      } catch (e) {
+        this.logger.warn(`rename primary company skipped: ${String(e)}`);
+        company = (await this.companyRepo.findOne({ where: { name: companyName } })) ?? company;
+      }
     }
+    // 删除/改名其它仍含「桌信」的重复公司，避免 UNIQUE 把启动打挂
+    try {
+      const typoCompanies = await this.companyRepo
+        .createQueryBuilder('c')
+        .where('c.name LIKE :kw', { kw: '%桌信%' })
+        .getMany();
+      for (const c of typoCompanies) {
+        if (company && c.id === company.id) {
+          try {
+            c.name = companyName;
+            await this.companyRepo.save(c);
+          } catch {
+            /* already correct name elsewhere */
+          }
+          continue;
+        }
+        try {
+          await this.companyRepo.delete(c.id);
+          this.logger.log(`delete duplicate company #${c.id} (${c.name})`);
+        } catch {
+          try {
+            c.name = `${companyName}-dup-${c.id}`;
+            await this.companyRepo.save(c);
+          } catch (e2) {
+            this.logger.warn(`skip duplicate company #${c.id}: ${String(e2)}`);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`cleanup typo companies skipped: ${String(e)}`);
+    }
+
+    // 1b. 纠正项目名中的「桌信」（重名则加后缀，失败不阻塞启动）
+    try {
+      const typoProjects = await this.projectRepo
+        .createQueryBuilder('p')
+        .where('p.name LIKE :kw', { kw: '%桌信%' })
+        .getMany();
+      for (const p of typoProjects) {
+        let fixed = p.name.replace(/桌信/g, '卓信');
+        try {
+          p.name = fixed;
+          await this.projectRepo.save(p);
+          this.logger.log(`rename project: → ${fixed}`);
+        } catch {
+          fixed = `${fixed}-${p.id}`;
+          try {
+            p.name = fixed;
+            await this.projectRepo.save(p);
+            this.logger.log(`rename project with suffix: → ${fixed}`);
+          } catch (e2) {
+            this.logger.warn(`rename project #${p.id} skipped: ${String(e2)}`);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`rename projects 桌信→卓信 skipped: ${String(e)}`);
+    }
+
+    // 1c. 房屋状态旧值归一：已交房/空置→未装修；装修中/已入住→已装修
+    await this.dataSource.query(
+      `UPDATE customer SET house_status = 'UNDECORATED' WHERE house_status IN ('DELIVERED', 'VACANT')`,
+    );
+    await this.dataSource.query(
+      `UPDATE customer SET house_status = 'DECORATED' WHERE house_status IN ('DECORATING', 'OCCUPIED')`,
+    );
 
     // 2. 权限点（全量 upsert）
     const allPermissions = PERMISSION_GROUPS.flatMap((g) =>
@@ -263,7 +346,7 @@ export class SeedService implements OnModuleInit {
 
     // 8. 演示多项目（同公司多小区），中文名称；仅首次创建
     const demoProjects = [
-      { name: '桌信花园', landArea: 52000, address: '湖南省株洲市天元区长江南路 88 号' },
+      { name: '卓信花园', landArea: 52000, address: '湖南省株洲市天元区长江南路 88 号' },
       { name: '滨江壹号', landArea: 38000, address: '湖南省株洲市芦淞区建设中路 168 号' },
       { name: '神农城公馆', landArea: 41000, address: '湖南省株洲市天元区神农大道 66 号' },
       { name: '河东馨苑', landArea: 28600, address: '湖南省株洲市荷塘区新华东路 128 号' },

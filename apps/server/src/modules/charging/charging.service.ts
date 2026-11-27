@@ -8,9 +8,13 @@ import {
   FeeItemCode,
   HOUSE_STATUS_LABELS,
   HouseStatus,
+  isVacantDiscountEligible,
   LedgerStatus,
+  normalizeHouseStatus,
   PaymentStatus,
   ReceiptStatus,
+  RECEIPT_DELIVERY_PROPERTY_REMARK,
+  RECEIPT_FIXED_REMARK,
 } from '@pms/shared';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { TenantService } from '../../common/tenant/tenant.service';
@@ -27,7 +31,6 @@ import {
 import { FeeCalculationService, FeeCalcResult } from '../fee-calculation/fee-calculation.service';
 import { CustomerService } from '../customer/customer.service';
 import { SequenceService } from './sequence.service';
-import { RECEIPT_FIXED_REMARK } from '@pms/shared';
 
 export interface ChargeResult {
   orderNo: string;
@@ -58,13 +61,25 @@ export class ChargingService {
     private readonly customerService: CustomerService,
   ) {}
 
-  private async assertVacantDiscountAllowed(companyId: number, customerId: number, discountType?: DiscountType) {
+  /** 空置房优惠：未交房/未装修可享；已装修不可 */
+  private assertVacantDiscountAllowed(customer: CustomerEntity, discountType?: DiscountType) {
     if (discountType !== DiscountType.VACANT) return;
+    if (!isVacantDiscountEligible(customer.houseStatus)) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        '空置房优惠仅适用于未装修房屋；装修报备后房屋为已装修，不可再享空置优惠',
+      );
+    }
+  }
+
+  /** 未装修报备不可押金抵扣 */
+  private async assertDepositDeductAllowed(companyId: number, customerId: number, depositDeduct?: number) {
+    if (!depositDeduct || depositDeduct <= 0) return;
     const ok = await this.customerService.hasActiveDecorateFiling(companyId, customerId);
     if (!ok) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        '选择空置房优惠须先有有效装修报备；请在客户档案中登记装修报备',
+        '未进行装修报备不可押金抵扣；请先在客户档案中登记装修报备',
       );
     }
   }
@@ -91,17 +106,18 @@ export class ChargingService {
       if (!customer || customer.deletedAt) throw new BusinessException(ErrorCodes.ROOM_NO_NOT_FOUND);
       const project = await manager.findOne(ProjectEntity, { where: { id: input.projectId, companyId } });
       if (!project) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在');
-      await this.assertVacantDiscountAllowed(companyId, customer.id, input.discountType);
+      this.assertVacantDiscountAllowed(customer, input.discountType);
+      await this.assertDepositDeductAllowed(companyId, customer.id, input.depositDeduct);
 
-      // ①a 复查押金/装修管理费/垃圾清运费未缴（重复拦截；已交房后的重复提交同样拦截）
+      // ①a 复查押金/装修管理费/垃圾清运费未缴（重复拦截）
       const existingDelivery = await manager.findOne(ReceiptOrderEntity, {
         where: { companyId, customerId: customer.id, chargeType: ChargeType.DELIVERY, status: ReceiptStatus.EFFECTIVE },
       });
-      if (existingDelivery || customer.houseStatus !== HouseStatus.UNDELIVERED) {
+      if (existingDelivery || normalizeHouseStatus(customer.houseStatus) !== HouseStatus.UNDELIVERED) {
         throw new BusinessException(ErrorCodes.FEE_ALREADY_PAID, '该费用已缴纳');
       }
 
-      // ② 计算四项费用
+      // ② 计算四项费用（物业费按起始日精确到天）
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId: customer.id } });
       const ctx = await this.feeCalculationService.resolveParameters(
         companyId,
@@ -109,7 +125,12 @@ export class ChargingService {
         customer.propertyType,
       );
       const arrearsMonths = this.feeCalculationService.arrearsMonthsFor(customer, ledgers);
-      const items = this.feeCalculationService.calcDeliveryFees(customer.houseArea, arrearsMonths, ctx);
+      const items = this.feeCalculationService.calcDeliveryFees(
+        customer.houseArea,
+        arrearsMonths,
+        ctx,
+        customer.feeStartDate,
+      );
       const receivable = items.reduce((s, i) => s + i.amount, 0);
 
       // ②a 校验优惠 + 押金抵扣 ≤ 应交；实收 ≥ 0
@@ -159,7 +180,7 @@ export class ChargingService {
           status: ReceiptStatus.EFFECTIVE,
           payeeName: (await manager.findOne(UserEntity, { where: { id: userId } }))?.realName ?? '收费员',
           paidAt: now,
-          remark: RECEIPT_FIXED_REMARK,
+          remark: RECEIPT_DELIVERY_PROPERTY_REMARK,
         }),
       );
       await manager.save(
@@ -207,9 +228,9 @@ export class ChargingService {
         }),
       );
 
-      // ⑦ 更新客户交房时间并将房屋状态流转为"已交房"
+      // ⑦ 交房完成：未交房 → 未装修
       customer.deliveryDate = now;
-      customer.houseStatus = HouseStatus.DELIVERED;
+      customer.houseStatus = HouseStatus.UNDECORATED;
       await manager.save(customer);
 
       return {
@@ -219,7 +240,7 @@ export class ChargingService {
         depositDeduct,
         receivedAmount: received,
         items,
-        remark: RECEIPT_FIXED_REMARK,
+        remark: RECEIPT_DELIVERY_PROPERTY_REMARK,
       };
       // ⑧ 审计日志由 @Audit 拦截器在成功后写入
     });
@@ -248,7 +269,8 @@ export class ChargingService {
       if (!customer || customer.deletedAt) throw new BusinessException(ErrorCodes.ROOM_NO_NOT_FOUND);
       const project = await manager.findOne(ProjectEntity, { where: { id: input.projectId, companyId } });
       if (!project) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, '项目不存在');
-      await this.assertVacantDiscountAllowed(companyId, customer.id, input.discountType);
+      this.assertVacantDiscountAllowed(customer, input.discountType);
+      await this.assertDepositDeductAllowed(companyId, customer.id, input.depositDeduct);
 
       // 事务内复查剩余应交费月份 > 0
       const ledgers = await manager.find(PropertyFeeLedgerEntity, { where: { companyId, customerId: customer.id } });
@@ -272,7 +294,15 @@ export class ChargingService {
         throw new BusinessException(ErrorCodes.FEE_ALREADY_PAID, '所选月段与已缴/预占月段重叠');
       }
 
-      const receivable = Math.round((customer.houseArea * ctx.unitPrice) / 100) * input.months;
+      const endMonth = FeeCalculationService.addMonths(input.startMonth, input.months - 1);
+      const calcItem = this.feeCalculationService.calcPropertyFeeMonthsWithProration(
+        customer.houseArea,
+        input.startMonth,
+        input.months,
+        customer.feeStartDate,
+        ctx,
+      );
+      const receivable = calcItem.amount;
       const discountAmount = input.discountAmount ?? 0;
       const depositDeduct = input.depositDeduct ?? 0;
       if (input.discountType && discountAmount > receivable) {
@@ -288,7 +318,6 @@ export class ChargingService {
 
       const orderNo = await this.sequenceService.nextOrderNo(manager, companyId, prefix, seqDate);
       const now = new Date().toISOString();
-      const endMonth = FeeCalculationService.addMonths(input.startMonth, input.months - 1);
       const receipt = await manager.save(
         manager.create(ReceiptOrderEntity, {
           companyId,
@@ -333,19 +362,10 @@ export class ChargingService {
           status: ReceiptStatus.EFFECTIVE,
           payeeName: (await manager.findOne(UserEntity, { where: { id: userId } }))?.realName ?? '收费员',
           paidAt: now,
-          remark: RECEIPT_FIXED_REMARK,
+          remark: RECEIPT_DELIVERY_PROPERTY_REMARK,
         }),
       );
       const orderId = (receipt as ReceiptOrderEntity).id;
-
-      const calcItem: FeeCalcResult = {
-        feeItemCode: FeeItemCode.PROPERTY_FEE,
-        amount: receivable,
-        calcBasis: `${(customer.houseArea / 100).toFixed(2)}㎡ × ${ctx.unitPrice}分/㎡/月 × ${input.months}个月（${input.startMonth} 至 ${endMonth}）= ${(receivable / 100).toFixed(2)}元`,
-        parameterSnapshot: {
-          PROPERTY_FEE_UNIT_PRICE: ctx.unitPrice,
-        },
-      };
       await manager.save(
         manager.create(ReceiptOrderItemEntity, {
           companyId,
@@ -393,10 +413,11 @@ export class ChargingService {
         depositDeduct,
         receivedAmount: received,
         items: [calcItem],
-        remark: RECEIPT_FIXED_REMARK,
+        remark: RECEIPT_DELIVERY_PROPERTY_REMARK,
         billingInfo: {
           feeStartMonth: input.startMonth,
           feeEndMonth: endMonth,
+          months: input.months,
           totalBillableMonths,
           paidMonths: paidMonths + input.months,
           remainingMonths: remainingMonths - input.months,

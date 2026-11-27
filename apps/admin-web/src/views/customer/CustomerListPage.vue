@@ -152,7 +152,7 @@
         </el-form-item>
         <el-form-item label="房屋状态" required>
           <el-select v-model="form.houseStatus" style="width: 200px">
-            <!-- 已交房只能通过交房缴费达成，建档不可直接选 -->
+            <!-- 未交房→未装修须走交房缴费；此处可选三态便于存量导入 -->
             <el-option
               v-for="(label, v) in createStatusOptions"
               :key="v"
@@ -196,11 +196,17 @@ const { projectStore, currentProjectId, projectName, requireProjectId } = useCur
     void load();
   },
 });
-const statusLabels = HOUSE_STATUS_LABELS;
-/** 新建档案可选状态：不含「已交房」（须走交房缴费） */
-const createStatusOptions = Object.fromEntries(
-  Object.entries(HOUSE_STATUS_LABELS).filter(([k]) => k !== HouseStatus.DELIVERED),
-) as Record<string, string>;
+const statusLabels: Record<string, string> = {
+  [HouseStatus.UNDELIVERED]: HOUSE_STATUS_LABELS[HouseStatus.UNDELIVERED],
+  [HouseStatus.UNDECORATED]: HOUSE_STATUS_LABELS[HouseStatus.UNDECORATED],
+  [HouseStatus.DECORATED]: HOUSE_STATUS_LABELS[HouseStatus.DECORATED],
+};
+/** 新建档案可选：未交房 / 未装修 / 已装修；「未交房→未装修」仍须走交房缴费 */
+const createStatusOptions = {
+  [HouseStatus.UNDELIVERED]: HOUSE_STATUS_LABELS[HouseStatus.UNDELIVERED],
+  [HouseStatus.UNDECORATED]: HOUSE_STATUS_LABELS[HouseStatus.UNDECORATED],
+  [HouseStatus.DECORATED]: HOUSE_STATUS_LABELS[HouseStatus.DECORATED],
+};
 const residentLabels = RESIDENT_TYPE_LABELS;
 const propertyLabels = PROPERTY_TYPE_LABELS;
 /** 建档/筛选可选：住房、门面一楼、门面二楼（不含旧 COMMERCIAL 别名） */
@@ -342,7 +348,7 @@ function downloadTemplate() {
     ['3. 房屋性质：住房 / 门面一楼（面积×2）/ 门面二楼（面积×0.7）；也可填「一楼」「二楼」'],
     ['4. 物业费起始日期：建议 YYYY-MM-DD；也可填 YYYY-MM'],
     ['5. 已缴月数：期初已缴清的月份数（从起始月起连续已缴），用于系统启用前的历史缴费'],
-    ['6. 房屋状态：未交房 / 装修中 / 入住 / 空置'],
+    ['6. 房屋状态：未交房 / 未装修 / 已装修'],
     ['7. 住户类型：业主 / 租户'],
     ['8. 请删除示例行后再导入正式数据；单次建议不超过 2000 行'],
   ]);

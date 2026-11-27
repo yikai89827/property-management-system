@@ -66,6 +66,21 @@ describe('费用计算引擎（住房口径）', () => {
   it('物业费 = 面积百分位 × 单价分 ÷ 100 × 月数', () => {
     expect(service.calcPropertyFee(10000, 6, ctx).amount).toBe(72000); // 100×1.2×6 = 720 元
   });
+
+  it('起始日非 1 号时按天折算首月', () => {
+    // 月租 12000 分；2022-05-15~31：17/31；再加 6 月整月
+    const item = service.calcPropertyFeeByDateRange(10000, '2022-05-15', '2022-06-30', ctx);
+    const mayPart = Math.round((12000 * 17) / 31);
+    expect(item.amount).toBe(mayPart + 12000);
+    expect(item.calcBasis).toContain('按天');
+  });
+
+  it('交房物业费传入起始日时走按天精确', () => {
+    const items = service.calcDeliveryFees(10000, 2, ctx, '2022-05-15');
+    const property = items[3];
+    const mayPart = Math.round((12000 * 17) / 31);
+    expect(property.amount).toBe(mayPart + 12000);
+  });
 });
 
 describe('费用计算引擎（门面口径）', () => {

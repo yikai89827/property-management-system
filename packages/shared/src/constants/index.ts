@@ -54,20 +54,31 @@ export const ErrorMessages: Record<ErrorCode, string> = {
 };
 
 /**
- * 房屋状态流转矩阵（spec 5.2.1 规则 5）：
- * - "未交房→已交房"仅允许由交房缴费事务触发，不提供手工变更路径；
- * - 空置与已入住可互换。
+ * 房屋状态流转矩阵：
+ * - 未交房→未装修：仅交房缴费事务触发；
+ * - 未装修→已装修：装修报备登记触发（亦可手工）；
+ * - 已装修不可退回未交房。
  */
 export const HouseStatusTransitionMatrix: Record<HouseStatus, HouseStatus[]> = {
-  [HouseStatus.UNDELIVERED]: [HouseStatus.DELIVERED],
-  [HouseStatus.DELIVERED]: [HouseStatus.DECORATING, HouseStatus.OCCUPIED, HouseStatus.VACANT],
-  [HouseStatus.DECORATING]: [HouseStatus.OCCUPIED, HouseStatus.VACANT],
-  [HouseStatus.OCCUPIED]: [HouseStatus.VACANT, HouseStatus.DECORATING],
-  [HouseStatus.VACANT]: [HouseStatus.OCCUPIED, HouseStatus.DECORATING],
+  [HouseStatus.UNDELIVERED]: [HouseStatus.UNDECORATED],
+  [HouseStatus.UNDECORATED]: [HouseStatus.DECORATED],
+  [HouseStatus.DECORATED]: [],
+  // 旧值兼容：读取后应先 normalize
+  [HouseStatus.DELIVERED]: [HouseStatus.DECORATED],
+  [HouseStatus.DECORATING]: [],
+  [HouseStatus.OCCUPIED]: [],
+  [HouseStatus.VACANT]: [HouseStatus.DECORATED],
 };
 
-/** 收款单固定备注文案（spec 5.4.1，逐字一致） */
+/** 收款单固定备注文案 */
 export const RECEIPT_FIXED_REMARK = '该单据不作为报销凭证，如需发票请当月到物业中心领取。';
+
+/** 交房/续费收款单装修报备提示（备注栏） */
+export const RECEIPT_DECORATION_NOTICE =
+  '房屋装修前请到物业中心进行报备，未报备装修押金不予抵扣不予退还。感谢您对本公司工作的支持，祝您生活愉快！';
+
+/** 交房缴费、物业费续费收款单完整备注 */
+export const RECEIPT_DELIVERY_PROPERTY_REMARK = `${RECEIPT_FIXED_REMARK}\n${RECEIPT_DECORATION_NOTICE}`;
 
 /** 权限点清单（design 2.5.1 命名） */
 export const PermissionCodes = {

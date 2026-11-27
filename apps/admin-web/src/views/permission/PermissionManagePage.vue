@@ -52,12 +52,13 @@
       </el-tab-pane>
 
       <el-tab-pane label="角色管理" name="roles">
-        <el-table :data="roles" border>
-          <el-table-column prop="code" label="编码" />
-          <el-table-column prop="name" label="名称" />
-          <el-table-column label="内置" width="80">
+        <el-table :data="roles" border table-layout="auto" style="width: 100%">
+          <el-table-column prop="code" label="编码" min-width="160" />
+          <el-table-column prop="name" label="名称" min-width="160" />
+          <el-table-column label="类型" min-width="140" width="160">
             <template #default="{ row }">
-              <el-tag v-if="row.builtIn" type="warning">内置（禁删）</el-tag>
+              <el-tag v-if="row.builtIn" type="warning" effect="plain">内置（禁删）</el-tag>
+              <el-tag v-else type="info" effect="plain">自定义</el-tag>
             </template>
           </el-table-column>
         </el-table>

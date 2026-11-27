@@ -247,7 +247,7 @@ export class CustomerController {
     return this.customerService.delete(this.companyId(), Number(id));
   }
 
-  /** 房屋状态机流转（"未交房→已交房"仅由交房缴费事务触发，非法流转拒绝 PMS-3005） */
+  /** 房屋状态机流转（未交房→未装修仅由交房缴费触发，非法流转拒绝 PMS-3005） */
   @RequirePermissions(PermissionCodes.CUSTOMER_UPDATE)
   @Audit('CUSTOMER_STATUS_TRANSITION')
   @Post('customers/:id/house-status')

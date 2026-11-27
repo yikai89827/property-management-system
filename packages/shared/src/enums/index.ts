@@ -43,22 +43,69 @@ export function normalizePropertyType(type: PropertyType | string | undefined | 
   return PropertyType.RESIDENTIAL;
 }
 
-/** 房屋状态 */
+/**
+ * 房屋状态（业务三态）：
+ * 未交房 →（交房缴费）→ 未装修 →（装修报备）→ 已装修
+ * 旧值 DELIVERED/VACANT/DECORATING/OCCUPIED 仍可读取，经 normalizeHouseStatus 归一。
+ */
 export enum HouseStatus {
   UNDELIVERED = 'UNDELIVERED',
+  /** 交房后、装修报备前 */
+  UNDECORATED = 'UNDECORATED',
+  /** 已完成装修报备 */
+  DECORATED = 'DECORATED',
+  /** @deprecated 旧「已交房」，等同未装修 */
   DELIVERED = 'DELIVERED',
+  /** @deprecated 旧「装修中」，等同已装修 */
   DECORATING = 'DECORATING',
+  /** @deprecated 旧「已入住」，等同已装修 */
   OCCUPIED = 'OCCUPIED',
+  /** @deprecated 旧「空置」，等同未装修 */
   VACANT = 'VACANT',
 }
 
 export const HOUSE_STATUS_LABELS: Record<HouseStatus, string> = {
   [HouseStatus.UNDELIVERED]: '未交房',
-  [HouseStatus.DELIVERED]: '已交房',
-  [HouseStatus.DECORATING]: '装修中',
-  [HouseStatus.OCCUPIED]: '已入住',
-  [HouseStatus.VACANT]: '空置',
+  [HouseStatus.UNDECORATED]: '未装修',
+  [HouseStatus.DECORATED]: '已装修',
+  [HouseStatus.DELIVERED]: '未装修',
+  [HouseStatus.DECORATING]: '已装修',
+  [HouseStatus.OCCUPIED]: '已装修',
+  [HouseStatus.VACANT]: '未装修',
 };
+
+/** 归一化为业务三态 */
+export function normalizeHouseStatus(status: HouseStatus | string | undefined | null): HouseStatus {
+  if (status === HouseStatus.UNDELIVERED) return HouseStatus.UNDELIVERED;
+  if (
+    status === HouseStatus.DECORATED ||
+    status === HouseStatus.DECORATING ||
+    status === HouseStatus.OCCUPIED
+  ) {
+    return HouseStatus.DECORATED;
+  }
+  if (
+    status === HouseStatus.UNDECORATED ||
+    status === HouseStatus.DELIVERED ||
+    status === HouseStatus.VACANT
+  ) {
+    return HouseStatus.UNDECORATED;
+  }
+  return HouseStatus.UNDELIVERED;
+}
+
+/** 未装修（含未交房）可享空置房优惠；已装修不可 */
+export function isVacantDiscountEligible(status: HouseStatus | string | undefined | null): boolean {
+  const s = normalizeHouseStatus(status);
+  return s === HouseStatus.UNDELIVERED || s === HouseStatus.UNDECORATED;
+}
+
+/** 界面可选的三种房屋状态 */
+export const HOUSE_STATUS_OPTIONS: { value: HouseStatus; label: string }[] = [
+  { value: HouseStatus.UNDELIVERED, label: HOUSE_STATUS_LABELS[HouseStatus.UNDELIVERED] },
+  { value: HouseStatus.UNDECORATED, label: HOUSE_STATUS_LABELS[HouseStatus.UNDECORATED] },
+  { value: HouseStatus.DECORATED, label: HOUSE_STATUS_LABELS[HouseStatus.DECORATED] },
+];
 
 /** 缴费类型 */
 export enum ChargeType {

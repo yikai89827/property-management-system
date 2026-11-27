@@ -18,8 +18,13 @@
         <el-descriptions-item label="业主">{{ customerInfo?.name ?? '—' }}</el-descriptions-item>
         <el-descriptions-item label="装修时间">{{ customerInfo?.decorateDate ?? '—' }}</el-descriptions-item>
         <el-descriptions-item label="空置优惠资格">
-          <el-tag :type="customerInfo?.vacantEligible ? 'success' : 'info'" size="small">
-            {{ customerInfo?.vacantEligible ? '可选用' : '需装修报备' }}
+          <el-tag :type="customerInfo?.vacantEligible ? 'success' : 'warning'" size="small">
+            {{ customerInfo?.vacantEligible ? '未装修可选用' : '已装修不可用' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="押金抵扣">
+          <el-tag :type="customerInfo?.depositDeductAllowed ? 'success' : 'info'" size="small">
+            {{ customerInfo?.depositDeductAllowed ? '已报备可抵扣' : '未报备不可抵扣' }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="计费总区间">{{ billingInfo.billableFromMonth }} ~ {{ billingInfo.billableToMonth }}</el-descriptions-item>

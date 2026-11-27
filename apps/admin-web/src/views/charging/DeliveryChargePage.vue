@@ -23,9 +23,14 @@
         <el-descriptions-item label="装修时间">{{ previewData.customer.decorateDate ?? '—' }}</el-descriptions-item>
         <el-descriptions-item label="计费区间">{{ previewData.feeStartMonth }} ~ {{ previewData.feeEndMonth }}</el-descriptions-item>
         <el-descriptions-item label="欠费月数">{{ previewData.arrearsMonths }}</el-descriptions-item>
-        <el-descriptions-item label="空置优惠资格" :span="4">
-          <el-tag :type="previewData.customer.vacantEligible ? 'success' : 'info'">
-            {{ previewData.customer.vacantEligible ? '有有效装修报备，可选空置优惠' : '无装修报备，不可选空置优惠' }}
+        <el-descriptions-item label="空置优惠资格">
+          <el-tag :type="previewData.customer.vacantEligible ? 'success' : 'warning'">
+            {{ previewData.customer.vacantEligible ? '未装修，可选空置优惠' : '已装修，不可选空置优惠' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="押金抵扣">
+          <el-tag :type="previewData.customer.depositDeductAllowed ? 'success' : 'info'">
+            {{ previewData.customer.depositDeductAllowed ? '已报备，可抵扣' : '未报备，不可抵扣' }}
           </el-tag>
         </el-descriptions-item>
       </el-descriptions>
